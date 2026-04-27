@@ -1,0 +1,24 @@
+{
+  "name": "bot-mutual-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "chat": "tsx src/cli.ts",
+    "welcome-job": "tsx src/jobs/welcomeJob.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^1.48.0",
+    "dotenv": "^17.0.0",
+    "express": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  }
+}
