@@ -1,9 +1,9 @@
-import { GoogleGenAI, type Part } from '@google/genai';
+import { GoogleGenAI, type Content, type Part } from '@google/genai';
 import { config } from '../config.js';
 import { SYSTEM_PROMPT } from './prompts.js';
 import { functionDeclarations } from '../tools/definitions.js';
 import { handlers } from '../tools/handlers.js';
-import { getOrCreateHistorial } from '../memory/conversations.js';
+import { getHistorial, appendMessages } from '../memory/conversations.js';
 
 const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
 
@@ -11,15 +11,16 @@ const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
 const MAX_TOOL_ROUNDS = 6;
 
 export async function chat(telefono: string, mensajeUsuario: string): Promise<string> {
-  const historial = getOrCreateHistorial(telefono);
+  // Cargamos lo persistido en Supabase y trabajamos con una copia en memoria.
+  const historialPrevio = await getHistorial(telefono);
+  const historial: Content[] = [...historialPrevio];
 
-  // Inyectamos el teléfono en la system instruction para que el modelo
-  // sepa con quién habla sin tener que pedírselo al usuario.
-  const systemConContexto =
-    `${SYSTEM_PROMPT}\n\n[CONTEXTO INTERNO] Teléfono del usuario actual: ${telefono}`;
+  // Trackeamos los mensajes nuevos de este turno para guardarlos al final en una sola llamada.
+  const nuevos: Content[] = [];
 
-  // Agregamos el nuevo mensaje del usuario al historial
-  historial.push({ role: 'user', parts: [{ text: mensajeUsuario }] });
+  const mensajeUser: Content = { role: 'user', parts: [{ text: mensajeUsuario }] };
+  historial.push(mensajeUser);
+  nuevos.push(mensajeUser);
 
   let textoFinal = '';
 
@@ -28,7 +29,7 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
       model: config.model,
       contents: historial,
       config: {
-        systemInstruction: systemConContexto,
+        systemInstruction: SYSTEM_PROMPT,
         tools: [{ functionDeclarations }],
       },
     });
@@ -38,7 +39,9 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
     if (!content || !content.parts) break;
 
     // Guardamos la respuesta del modelo TAL CUAL (con todos sus parts)
-    historial.push({ role: 'model', parts: content.parts });
+    const mensajeModel: Content = { role: 'model', parts: content.parts };
+    historial.push(mensajeModel);
+    nuevos.push(mensajeModel);
 
     // ¿Hay function calls que ejecutar?
     const functionCalls = content.parts
@@ -65,7 +68,9 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
         });
       }
       // En Gemini, los function responses se mandan con role 'user'
-      historial.push({ role: 'user', parts: responseParts });
+      const mensajeTool: Content = { role: 'user', parts: responseParts };
+      historial.push(mensajeTool);
+      nuevos.push(mensajeTool);
       continue;
     }
 
@@ -75,6 +80,9 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
     }
     break;
   }
+
+  // Persistimos los mensajes nuevos de este turno en Supabase.
+  await appendMessages(telefono, nuevos);
 
   return textoFinal || '(sin respuesta)';
 }

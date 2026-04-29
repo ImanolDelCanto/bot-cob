@@ -26,8 +26,8 @@ export interface Credito {
 }
 
 const clientes: Cliente[] = [
-  { dni: '30123456', telefono: '5491155551111', nombre: 'Juan Pérez',       fechaNacimiento: '1985-03-15' },
-  { dni: '28987654', telefono: '5491155552222', nombre: 'María González',   fechaNacimiento: '1980-07-22' },
+  { dni: '30123456', telefono: '5491126763301', nombre: 'Juan Pérez',       fechaNacimiento: '1985-03-15' },
+  { dni: '28987654', telefono: '5491126763301', nombre: 'María González',   fechaNacimiento: '1980-07-22' },
   { dni: '35111222', telefono: '5491155553333', nombre: 'Carlos Rodríguez', fechaNacimiento: '1990-11-10' },
   { dni: '40555666', telefono: '5491155554444', nombre: 'Lucía Fernández',  fechaNacimiento: '1995-02-28' },
 ];
@@ -47,7 +47,7 @@ const creditos: Credito[] = [
     proximoVencimiento: '2026-05-05', saldoPendiente: 55000,  saldoEnMora: 0, diasMora: 0 },
 
   // Otro recién liquidado para probar el job de bienvenidas
-  { id: 'CR-004', dni: '40555666', estado: 'liquidado', monto: 250000, cuotas: 9,  cuotasPagadas: 0,
+  { id: 'CR-004', dni: '40555666', estado: 'pendiente', monto: 250000, cuotas: 9,  cuotasPagadas: 0,
     proximoVencimiento: '2026-05-20', saldoPendiente: 250000, saldoEnMora: 0, diasMora: 0,
     fechaLiquidacion: '2026-04-26' },
 ];

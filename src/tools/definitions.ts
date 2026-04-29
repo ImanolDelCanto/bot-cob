@@ -6,33 +6,16 @@ import { Type, type FunctionDeclaration } from '@google/genai';
 
 export const functionDeclarations: FunctionDeclaration[] = [
   {
-    name: 'identificar_cliente',
-    description:
-      'Busca un cliente por número de teléfono. Devuelve nombre y los últimos 4 dígitos del DNI. ' +
-      'Usar al inicio para personalizar el saludo. NO devuelve montos ni info financiera.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        telefono: {
-          type: Type.STRING,
-          description: 'Teléfono completo en formato internacional sin +, ej. 5491155551111',
-        },
-      },
-      required: ['telefono'],
-    },
-  },
-  {
     name: 'verificar_dni',
     description:
-      'Verifica si el DNI ingresado por el usuario coincide con el cliente registrado en ese teléfono. ' +
+      'Busca al asociado por DNI en la base de la mutual. Si existe, devuelve verificado=true junto con su nombre. ' +
       'OBLIGATORIO usar antes de revelar información financiera (saldos, montos, vencimientos).',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        telefono: { type: Type.STRING, description: 'Teléfono del usuario actual' },
         dni: { type: Type.STRING, description: 'DNI ingresado por el usuario, sin puntos ni espacios' },
       },
-      required: ['telefono', 'dni'],
+      required: ['dni'],
     },
   },
   {

@@ -12,7 +12,7 @@ function plantillaBienvenida(nombre: string, monto: number, creditoId: string): 
   const montoFmt = monto.toLocaleString('es-AR');
   return (
     `Hola ${nombre}! 👋\n\n` +
-    `Te damos la bienvenida a Mutual XYZ. Tu préstamo ${creditoId} por $${montoFmt} fue acreditado correctamente.\n\n` +
+    `Te damos la bienvenida a Mutual Protecap. Tu préstamo ${creditoId} por $${montoFmt} fue acreditado correctamente.\n\n` +
     `Cualquier consulta sobre cuotas, vencimientos o medios de pago, escribime por acá. ¡Estamos para ayudarte!`
   );
 }

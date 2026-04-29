@@ -1,26 +1,16 @@
 import {
-  buscarClientePorTelefono,
+  buscarClientePorDni,
   getCreditosPorDni,
 } from '../data/mockDb.js';
 
 type ToolHandler = (input: Record<string, any>) => Promise<unknown> | unknown;
 
 export const handlers: Record<string, ToolHandler> = {
-  identificar_cliente: ({ telefono }) => {
-    const cliente = buscarClientePorTelefono(String(telefono));
-    if (!cliente) return { encontrado: false };
-    return {
-      encontrado: true,
-      nombre: cliente.nombre,
-      dni_ultimos_4: cliente.dni.slice(-4),
-    };
-  },
-
-  verificar_dni: ({ telefono, dni }) => {
-    const cliente = buscarClientePorTelefono(String(telefono));
+  verificar_dni: ({ dni }) => {
     const dniLimpio = String(dni).replace(/\D/g, '');
-    const verificado = !!cliente && cliente.dni === dniLimpio;
-    return { verificado };
+    const cliente = buscarClientePorDni(dniLimpio);
+    if (!cliente) return { verificado: false };
+    return { verificado: true, nombre: cliente.nombre };
   },
 
   consultar_creditos: ({ dni }) => {
