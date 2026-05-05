@@ -1,6 +1,48 @@
 import { Router, type Request, type Response } from 'express';
 import { config, isWhatsAppConfigured } from '../config.js';
 import { chat } from '../llm/agent.js';
+import { appendMessages } from '../memory/conversations.js';
+import { downloadMediaFromMeta } from './media.js';
+import { saveComprobante } from '../storage/comprobantes.js';
+
+const HUMANO = '+54 9 11 2621-4000';
+const HORARIO = 'Lun a Vie de 9 a 17hs';
+
+// Mensajes para casos donde NO podemos procesar el archivo (audios u otros tipos).
+function respuestaNoProcesable(tipo: string): string {
+  if (tipo === 'audio' || tipo === 'voice') {
+    return (
+      `Recibí tu audio. Por ahora solo puedo leer mensajes de texto. ` +
+      `¿Podés escribirme tu consulta? Si preferís hablar con un asesor: ${HUMANO} (${HORARIO}).`
+    );
+  }
+  return (
+    `Recibí tu mensaje pero solo puedo procesar texto por acá. ` +
+    `Si tenés una consulta, escribime y te ayudo. Para hablar con un asesor: ${HUMANO} (${HORARIO}).`
+  );
+}
+
+// Mensaje cuando GUARDAMOS bien el comprobante (imagen o PDF).
+// Aclaramos que el comprobante por acá queda registrado solo internamente,
+// y que para que el pago se registre en el sistema tiene que mandarlo también
+// al asesor humano. La copia que guardamos sirve de auditoría: si el asesor
+// no lo carga, podemos detectarlo.
+function respuestaComprobanteGuardado(): string {
+  return (
+    `Recibí tu comprobante 🙌. Para que tu pago quede registrado en el sistema, ` +
+    `te pido que también se lo envíes a nuestro asesor por WhatsApp: ${HUMANO} (${HORARIO}). ` +
+    `Tu pago queda sujeto a verificación interna por nuestro equipo.`
+  );
+}
+
+// Mensaje cuando el archivo es un comprobante pero no pudimos guardarlo.
+// Caemos al flujo manual (que el cliente lo mande al humano).
+function respuestaComprobanteFallback(): string {
+  return (
+    `Recibí tu archivo pero tuve un problema al guardarlo de mi lado. ` +
+    `Mandalo por favor al WhatsApp de nuestro asesor para que lo registre: ${HUMANO} (${HORARIO}).`
+  );
+}
 
 const router = Router();
 
@@ -43,9 +85,66 @@ router.post('/webhook', async (req: Request, res: Response) => {
 
     const from: string = message.from;
     const text: string | undefined = message.text?.body;
+    const tipo: string = message.type ?? 'unknown';
 
+    // === Mensaje no-texto (imagen, audio, PDF, etc.) — NO llamamos al LLM ===
     if (!text) {
-      console.log(`📩 Mensaje no-texto de ${from} (tipo: ${message.type}), ignorando`);
+      // Imagen o documento → tratamos como posible comprobante: descargamos de Meta,
+      // subimos a Supabase Storage y registramos en la tabla `comprobantes`.
+      if (tipo === 'image' || tipo === 'document') {
+        const mediaId: string | undefined =
+          message.image?.id ?? message.document?.id;
+        console.log(`📩 ${from}: [${tipo}] mediaId=${mediaId}`);
+
+        let respuesta = respuestaComprobanteFallback();
+        let notaHistorial = `[el cliente envió un ${tipo} pero no se pudo guardar]`;
+
+        if (mediaId) {
+          try {
+            const media = await downloadMediaFromMeta(mediaId);
+            const persistido = await saveComprobante({
+              telefono: from,
+              buffer: media.buffer,
+              mimeType: media.mimeType,
+            });
+            console.log(`💾 Comprobante guardado: id=${persistido.id} path=${persistido.archivoPath} (${media.size} bytes)`);
+            respuesta = respuestaComprobanteGuardado();
+            notaHistorial = `[el cliente envió un comprobante (${tipo}, id=${persistido.id}) — guardado en Supabase, pendiente de procesar por humano]`;
+          } catch (err: any) {
+            console.error('Error guardando comprobante:', err?.message ?? err);
+            // respuesta queda en fallback, notaHistorial también
+          }
+        }
+
+        try {
+          await appendMessages(from, [
+            { role: 'user', parts: [{ text: notaHistorial }] },
+            { role: 'model', parts: [{ text: respuesta }] },
+          ]);
+        } catch (err: any) {
+          console.error('No pude guardar la nota en historial:', err?.message ?? err);
+        }
+
+        console.log(`📤 → ${from}: ${respuesta}`);
+        await sendWhatsAppMessage(from, respuesta);
+        return;
+      }
+
+      // Cualquier otro tipo no-texto (audio, voice, video, sticker, etc.) → respuesta fija sin guardar archivo.
+      console.log(`📩 ${from}: [${tipo}] (no-procesable, respuesta automática)`);
+      const respuesta = respuestaNoProcesable(tipo);
+
+      try {
+        await appendMessages(from, [
+          { role: 'user', parts: [{ text: `[el cliente envió un ${tipo}, no procesado por el bot]` }] },
+          { role: 'model', parts: [{ text: respuesta }] },
+        ]);
+      } catch (err: any) {
+        console.error('No pude guardar la nota en historial:', err?.message ?? err);
+      }
+
+      console.log(`📤 → ${from}: ${respuesta}`);
+      await sendWhatsAppMessage(from, respuesta);
       return;
     }
 

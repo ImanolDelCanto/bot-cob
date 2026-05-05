@@ -23,8 +23,12 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
   nuevos.push(mensajeUser);
 
   let textoFinal = '';
+  let ultimaRonda = -1;
+  let ultimaFinishReason: string | undefined;
 
   for (let ronda = 0; ronda < MAX_TOOL_ROUNDS; ronda++) {
+    ultimaRonda = ronda;
+
     const response = await ai.models.generateContent({
       model: config.model,
       contents: historial,
@@ -35,8 +39,21 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
     });
 
     const candidate = response.candidates?.[0];
+    ultimaFinishReason = candidate?.finishReason;
     const content = candidate?.content;
-    if (!content || !content.parts) break;
+
+    // Acumulamos texto de CADA ronda (no solo la última) — si el modelo manda texto +
+    // function call en la misma respuesta, no queremos perder el texto.
+    if (content?.parts) {
+      for (const part of content.parts) {
+        if (part.text) textoFinal += part.text;
+      }
+    }
+
+    if (!content || !content.parts) {
+      console.log(`[chat ${telefono}] ronda ${ronda} sin content. finishReason=${ultimaFinishReason}`);
+      break;
+    }
 
     // Guardamos la respuesta del modelo TAL CUAL (con todos sus parts)
     const mensajeModel: Content = { role: 'model', parts: content.parts };
@@ -47,6 +64,12 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
     const functionCalls = content.parts
       .map(p => p.functionCall)
       .filter((fc): fc is NonNullable<typeof fc> => !!fc);
+
+    const tieneTexto = content.parts.some(p => p.text);
+    console.log(
+      `[chat ${telefono}] ronda ${ronda} finishReason=${ultimaFinishReason} ` +
+      `tools=${functionCalls.map(fc => fc.name).join(',') || '-'} texto=${tieneTexto}`
+    );
 
     if (functionCalls.length > 0) {
       const responseParts: Part[] = [];
@@ -74,11 +97,14 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
       continue;
     }
 
-    // No hay function calls → extraemos el texto final
-    for (const part of content.parts) {
-      if (part.text) textoFinal += part.text;
-    }
+    // No hay function calls → terminamos
     break;
+  }
+
+  if (!textoFinal) {
+    console.warn(
+      `[chat ${telefono}] sin texto de respuesta. ronda=${ultimaRonda} finishReason=${ultimaFinishReason}`
+    );
   }
 
   // Persistimos los mensajes nuevos de este turno en Supabase.

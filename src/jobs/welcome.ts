@@ -1,12 +1,18 @@
-import { getCreditosLiquidados, buscarClientePorDni } from '../data/mockDb.js';
+import { db } from '../data/index.js';
 import { sendWhatsAppMessage } from '../whatsapp/webhook.js';
 import { supabase } from '../db/supabase.js';
 import { config } from '../config.js';
 
 const TEMPLATE_NAME = 'bienvenida_credito';
 
+// Cuántas horas hacia atrás considerar como "recién liquidado".
+// 48hs por defecto: si el cron corre cada 2hs hay redundancia, pero la idempotencia
+// (sent_messages) protege de duplicados. El extra cubre eventuales caídas del cron.
+const HORAS_LOOKBACK = 48;
+
 // Convierte una fecha ISO (yyyy-mm-dd) al formato argentino DD/MM/YYYY.
 function formatFechaCorta(iso: string): string {
+  if (!iso) return '';
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
 }
@@ -39,7 +45,7 @@ export interface WelcomeJobOptions {
   force?: boolean;
 }
 
-// Job de bienvenida: para cada crédito recién liquidado, manda un mensaje al cliente
+// Job de bienvenida: para cada préstamo recién liquidado, manda un mensaje al cliente
 // confirmando la acreditación. Idempotente: usa la tabla sent_messages para no
 // mandar dos veces el mismo template al mismo crédito.
 export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<WelcomeJobResult> {
@@ -63,19 +69,23 @@ export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<Welco
     }
   }
 
-  const creditos = getCreditosLiquidados();
+  const operaciones = await db.getPrestamosRecienLiquidados(HORAS_LOOKBACK);
   const result: WelcomeJobResult = {
-    total: creditos.length,
+    total: operaciones.length,
     enviados: 0,
     saltados: 0,
     errores: [],
     dryRun,
   };
 
-  for (const credito of creditos) {
-    const cliente = buscarClientePorDni(credito.dni);
+  for (const op of operaciones) {
+    const cliente = await db.buscarClientePorDni(op.dni);
     if (!cliente) {
-      result.errores.push({ creditoId: credito.id, error: 'Cliente no encontrado' });
+      result.errores.push({ creditoId: op.id, error: 'Cliente no encontrado para el DNI ' + op.dni });
+      continue;
+    }
+    if (!cliente.telefono) {
+      result.errores.push({ creditoId: op.id, error: 'Cliente sin teléfono registrado' });
       continue;
     }
 
@@ -84,11 +94,11 @@ export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<Welco
       .from('sent_messages')
       .select('id')
       .eq('template_name', TEMPLATE_NAME)
-      .eq('external_id', credito.id)
+      .eq('external_id', op.id)
       .maybeSingle();
 
     if (queryErr) {
-      result.errores.push({ creditoId: credito.id, error: `Error chequeando idempotencia: ${queryErr.message}` });
+      result.errores.push({ creditoId: op.id, error: `Error chequeando idempotencia: ${queryErr.message}` });
       continue;
     }
 
@@ -97,14 +107,13 @@ export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<Welco
       continue;
     }
 
-    const primerNombre = cliente.nombre.split(' ')[0];
-    const monto = credito.monto.toLocaleString('es-AR');
-    const fechaVenc = formatFechaCorta(credito.proximoVencimiento);
+    const monto = op.capitalOriginal.toLocaleString('es-AR');
+    const fechaVenc = formatFechaCorta(op.primerVencimiento);
     const texto =
-      `¡Hola ${primerNombre}! Tu crédito ya está acreditado.\n\n` +
+      `¡Hola ${cliente.primerNombre}! Tu crédito ya está acreditado.\n\n` +
       `📋 Resumen\n` +
       `• Monto: $${monto}\n` +
-      `• Cuotas: ${credito.cuotas}\n` +
+      `• Cuotas: ${op.totalCuotas}\n` +
       `• Primer vencimiento: ${fechaVenc}\n\n` +
       `Para ver medios de pago o consultar saldo, respondé "MEDIOS" o "SALDO".\n` +
       `Si necesitás otra cosa, escribime y te ayudo. — Mutu, Mutual Protecap`;
@@ -121,17 +130,17 @@ export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<Welco
       const { error: insertErr } = await supabase.from('sent_messages').insert({
         telefono: cliente.telefono,
         template_name: TEMPLATE_NAME,
-        external_id: credito.id,
+        external_id: op.id,
       });
       if (insertErr) {
         // Si llegamos acá el mensaje ya se mandó pero no pudimos registrar idempotencia.
         // Logueamos pero no lo contamos como error de envío.
-        console.error(`Mensaje enviado pero falló registro en sent_messages para ${credito.id}:`, insertErr.message);
+        console.error(`Mensaje enviado pero falló registro en sent_messages para ${op.id}:`, insertErr.message);
       }
 
       result.enviados++;
     } catch (err: any) {
-      result.errores.push({ creditoId: credito.id, error: String(err?.message ?? err) });
+      result.errores.push({ creditoId: op.id, error: String(err?.message ?? err) });
     }
   }
 

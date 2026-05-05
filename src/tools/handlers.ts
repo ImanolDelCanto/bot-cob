@@ -1,32 +1,79 @@
-import {
-  buscarClientePorDni,
-  getCreditosPorDni,
-} from '../data/mockDb.js';
+import { db } from '../data/index.js';
 
 type ToolHandler = (input: Record<string, any>) => Promise<unknown> | unknown;
 
 export const handlers: Record<string, ToolHandler> = {
-  verificar_dni: ({ dni }) => {
+  verificar_dni: async ({ dni }) => {
     const dniLimpio = String(dni).replace(/\D/g, '');
-    const cliente = buscarClientePorDni(dniLimpio);
+    const cliente = await db.buscarClientePorDni(dniLimpio);
     if (!cliente) return { verificado: false };
     return { verificado: true, nombre: cliente.nombre };
   },
 
-  consultar_creditos: ({ dni }) => {
-    const creditos = getCreditosPorDni(String(dni));
-    if (creditos.length === 0) return { creditos: [] };
+  consultar_creditos: async ({ dni }) => {
+    const dniLimpio = String(dni).replace(/\D/g, '');
+    const resumen = await db.getResumenPorDni(dniLimpio);
+    if (!resumen) return { encontrado: false };
+
+    const opsActivas = resumen.operaciones.filter(op => op.estado === 'Activa');
+    const tieneMora = resumen.saldoEnMora > 0;
+    const hoy = new Date();
+
+    // Para cada operación activa calculamos la fecha de la PRÓXIMA cuota a vencer
+    // (o la cuota más vieja sin pagar si ya está vencida). Es: primerVto + cuotasPagadas meses.
+    const proximasFechas = opsActivas
+      .map(op => {
+        if (!op.primerVencimiento) return null;
+        const fecha = new Date(op.primerVencimiento);
+        if (Number.isNaN(fecha.getTime())) return null;
+        fecha.setMonth(fecha.getMonth() + op.cuotasPagadas);
+        return fecha;
+      })
+      .filter((d): d is Date => d !== null);
+
+    // La más temprana entre todas las operaciones activas — es la cuota más urgente.
+    const fechaRelevante = proximasFechas.length > 0
+      ? new Date(Math.min(...proximasFechas.map(d => d.getTime())))
+      : null;
+
+    const diasAtraso = fechaRelevante
+      ? Math.floor((hoy.getTime() - fechaRelevante.getTime()) / 86_400_000)
+      : 0;
+
+    const fechaIso = fechaRelevante ? fechaRelevante.toISOString().slice(0, 10) : null;
+
     return {
-      creditos: creditos.map(c => ({
-        id: c.id,
-        estado: c.estado,
-        monto_original: c.monto,
-        cuotas_total: c.cuotas,
-        cuotas_pagadas: c.cuotasPagadas,
-        saldo_pendiente: c.saldoPendiente,
-        saldo_en_mora: c.saldoEnMora,
-        dias_mora: c.diasMora,
-        proximo_vencimiento: c.proximoVencimiento,
+      encontrado: true,
+      cliente: { nombre: resumen.cliente.nombre },
+      // ⭐ DATO PRIMARIO: usar SIEMPRE este resumen agregado.
+      // NO descomponer la respuesta por operación — para el cliente la deuda es UNA SOLA.
+      resumen: {
+        saldo_total: resumen.saldoTotal,
+        saldo_en_mora: resumen.saldoEnMora,
+        // Cuota mensual PURA: lo que el cliente paga si está al día, sin punitorios ni mora.
+        // Suma préstamo + cuota social ($15.000 fijo) + asistencia (valor en el nombre).
+        cuota_mensual_pura: resumen.cuotaMensualTotal,
+        estado: tieneMora ? 'en_mora' : 'al_dia',
+        hay_prestamo_activo: resumen.hayPrestamoActivo,
+        // SI estado === 'en_mora' usá ESTE bloque. NO menciones "próxima cuota" ni "cuándo vence".
+        // Hablale al cliente del saldo vencido y los días de atraso.
+        mora: tieneMora ? {
+          saldo_vencido: resumen.saldoEnMora,
+          dias_atraso_aprox: Math.max(0, diasAtraso),
+          fecha_cuota_mas_vieja_vencida: fechaIso,
+        } : null,
+        // SI estado === 'al_dia' usá ESTE bloque. Decile cuándo vence la próxima.
+        al_dia: tieneMora ? null : {
+          proxima_cuota_fecha: fechaIso,
+        },
+      },
+      // 🚫 SOLO usar este detalle si el cliente PREGUNTA EXPLÍCITAMENTE por sus productos.
+      // NO lo uses para responder "cuánto debo" ni "cuándo vence" — para eso usá `resumen`.
+      _detalle_por_producto_solo_si_lo_piden: resumen.operaciones.map(op => ({
+        producto: op.producto,
+        plan: op.plan,
+        es_credito: op.esCredito,
+        estado: op.estado,
       })),
     };
   },
@@ -35,20 +82,30 @@ export const handlers: Record<string, ToolHandler> = {
     medios: [
       {
         tipo: 'transferencia',
-        alias: 'MUTUAL.PAGOS',
-        cbu: '0000003100012345678901',
-        titular: 'Mutual XYZ',
+        empresa: 'PROTECAP',
+        cuit: '30-70954656-9',
+        banco: 'Banco Patagonia',
+        cuenta_corriente_pesos: '145-145005454-000',
+        alias: 'ESPEJO.ASTRO.LITIO',
+        cbu: '0340145900145005454004',
       },
       {
-        tipo: 'pago_mis_cuentas',
-        codigo: '12345',
-        concepto: 'Mutual XYZ',
+        tipo: 'rapipago',
+        requiere_asesor_humano: true,
+        instrucciones:
+          'Para pagar por Rapipago, contactá a un asesor humano que te genera la boleta. ' +
+          'Llamá al +54 9 11 2621-4000 (Lun-Vie 9-17hs).',
       },
       {
-        tipo: 'rapipago_pagofacil',
-        instrucciones: 'Solicitar boleta a la mutual o generar desde la web.',
+        tipo: 'tarjeta_credito_mercadopago',
+        requiere_asesor_humano: true,
+        instrucciones:
+          'Aceptamos tarjeta de crédito por Mercado Pago. Esta opción se gestiona con un ' +
+          'asesor humano: llamá al +54 9 11 2621-4000 (Lun-Vie 9-17hs).',
       },
     ],
-    nota: 'Después de pagar, enviar comprobante por este mismo canal.',
+    contacto_humano: '+54 9 11 2621-4000',
+    horario_humano: 'Lunes a Viernes de 9 a 17hs',
+    nota: 'Después de pagar, enviá el comprobante por este mismo chat.',
   }),
 };

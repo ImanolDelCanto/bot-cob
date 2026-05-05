@@ -19,6 +19,8 @@ export const config = {
   supabase: {
     url: mustGetEnv('SUPABASE_URL'),
     serviceRoleKey: mustGetEnv('SUPABASE_SERVICE_ROLE_KEY'),
+    // Nombre del bucket privado donde guardamos comprobantes recibidos por WhatsApp.
+    bucketComprobantes: process.env.SUPABASE_BUCKET_COMPROBANTES ?? 'comprobantes',
   },
   // Cuántos mensajes del historial le mandamos a Gemini en cada turno.
   // Si la conversación crece más, se envían solo los últimos N.
@@ -31,6 +33,19 @@ export const config = {
   jobs: {
     hourStart: Number(process.env.JOBS_HOUR_START ?? 10),
     hourEnd: Number(process.env.JOBS_HOUR_END ?? 21),
+  },
+  // Toggle para alternar entre mock y endpoint real de la mutual.
+  // true → usa el mock embebido en src/data/mockDb.ts (default, dev/testing)
+  // false → usa el endpoint real (requiere ENDPOINT_* abajo configurados)
+  useMockDb: (process.env.USE_MOCK_DB ?? 'true').toLowerCase() !== 'false',
+  endpoint: {
+    baseUrl: process.env.ENDPOINT_BASE_URL ?? '',
+    ticket: process.env.ENDPOINT_TICKET ?? '',
+    empresaId: Number(process.env.ENDPOINT_EMPRESA_ID ?? 0),
+    timeoutMs: Number(process.env.ENDPOINT_TIMEOUT_MS ?? 30_000),
+    // TTL del cache en memoria del snapshot completo. Default 5 min.
+    // Subirlo si los datos cambian poco; bajarlo si necesitás info más fresca.
+    cacheTtlMs: Number(process.env.ENDPOINT_CACHE_TTL_MS ?? 300_000),
   },
 };
 

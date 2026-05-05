@@ -4,6 +4,11 @@ import { chat } from './llm/agent.js';
 import { resetHistorial } from './memory/conversations.js';
 import whatsappRouter from './whatsapp/webhook.js';
 import { runWelcomeJob } from './jobs/welcome.js';
+import {
+  listPendientes as listComprobantesPendientes,
+  marcarProcesado as marcarComprobanteProcesado,
+  marcarRechazado as marcarComprobanteRechazado,
+} from './storage/comprobantes.js';
 
 const app = express();
 app.use(express.json());
@@ -70,6 +75,64 @@ app.post('/admin/jobs/welcome', requireAdmin, async (req: Request, res: Response
   }
 });
 
+// Lista los comprobantes en estado 'pendiente' con URLs firmadas (1h) para verlos.
+// Útil para que un humano los procese desde un dashboard / cliente HTTP.
+app.get('/admin/comprobantes/pendientes', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const limit = Number(req.query.limit ?? 50);
+    const result = await listComprobantesPendientes({ limit });
+    res.json({ comprobantes: result });
+  } catch (err: any) {
+    console.error('Error en /admin/comprobantes/pendientes:', err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
+// Marca un comprobante como procesado (ya registrado en el sistema interno).
+// Body: { procesado_por: string, notas?: string }
+app.post('/admin/comprobantes/:id/marcar-procesado', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'id inválido' });
+    }
+    const procesadoPor = String(req.body?.procesado_por ?? '').trim();
+    if (!procesadoPor) {
+      return res.status(400).json({ error: 'Falta procesado_por (nombre del operador humano)' });
+    }
+    await marcarComprobanteProcesado({
+      id,
+      procesadoPor,
+      notas: typeof req.body?.notas === 'string' ? req.body.notas : undefined,
+    });
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('Error en /admin/comprobantes/:id/marcar-procesado:', err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
+// Marca un comprobante como rechazado (ej: ilegible, duplicado, no corresponde).
+// Body: { procesado_por: string, notas: string }
+app.post('/admin/comprobantes/:id/marcar-rechazado', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'id inválido' });
+    }
+    const procesadoPor = String(req.body?.procesado_por ?? '').trim();
+    const notas = String(req.body?.notas ?? '').trim();
+    if (!procesadoPor || !notas) {
+      return res.status(400).json({ error: 'Faltan procesado_por y/o notas (motivo del rechazo)' });
+    }
+    await marcarComprobanteRechazado({ id, procesadoPor, notas });
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('Error en /admin/comprobantes/:id/marcar-rechazado:', err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
 app.listen(config.port, () => {
   console.log(`🤖 Bot mutual escuchando en http://localhost:${config.port}`);
   console.log(`   POST /chat               { telefono, mensaje }`);
@@ -77,7 +140,10 @@ app.listen(config.port, () => {
   console.log(`   GET  /health`);
   console.log(`   GET  /whatsapp/webhook   (verificación de Meta)`);
   console.log(`   POST /whatsapp/webhook   (mensajes entrantes)`);
-  console.log(`   POST /admin/jobs/welcome (requiere Authorization: Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/jobs/welcome              (Bearer ADMIN_TOKEN)`);
+  console.log(`   GET  /admin/comprobantes/pendientes   (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/comprobantes/:id/marcar-procesado  (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/comprobantes/:id/marcar-rechazado  (Bearer ADMIN_TOKEN)`);
   if (!isWhatsAppConfigured()) {
     console.log(`   ⚠️  WhatsApp NO configurado: faltan WHATSAPP_* en .env`);
   }

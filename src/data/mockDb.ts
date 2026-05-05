@@ -1,69 +1,134 @@
-// Mock de la base interna de la mutual.
-// Cuando esté el endpoint real, este archivo se reemplaza por un cliente HTTP
-// que llame al endpoint, manteniendo la misma firma de funciones.
+// Mock para desarrollo y testing — implementa el mismo contrato (DataSource) que realDb.
+// Cuando se desactiva el mock (USE_MOCK_DB=false), el bot pasa a usar el endpoint real.
 
-export type EstadoCredito = 'pendiente' | 'liquidado' | 'cancelado' | 'en_mora';
+import { esProductoPrestamo } from './products.js';
+import type { Cliente, DataSource, Operacion, ResumenCliente } from './types.js';
 
-export interface Cliente {
+interface MockClienteRow {
   dni: string;
-  telefono: string; // formato internacional sin +, ej. 5491155551111
   nombre: string;
-  fechaNacimiento: string; // ISO yyyy-mm-dd
+  primerNombre: string;
+  telefono: string;
+  cuil?: string;
 }
 
-export interface Credito {
+interface MockOperacionRow {
   id: string;
   dni: string;
-  estado: EstadoCredito;
-  monto: number;
-  cuotas: number;
+  producto: string;
+  plan: string;
+  estado: string;
+  fechaLiquidacion: string;
+  primerVencimiento: string;
+  totalCuotas: number;
   cuotasPagadas: number;
-  proximoVencimiento: string; // ISO yyyy-mm-dd
-  saldoPendiente: number;
+  cuotasImpagas: number;
+  cuotasImpagasVencidas: number;
+  importeCuota: number;
+  capitalOriginal: number;
+  saldoTotal: number;
   saldoEnMora: number;
-  diasMora: number;
-  fechaLiquidacion?: string;
+  punitorios: number;
 }
 
-const clientes: Cliente[] = [
-  { dni: '30123456', telefono: '5491126763301', nombre: 'Juan Pérez',       fechaNacimiento: '1985-03-15' },
-  { dni: '28987654', telefono: '5491126763301', nombre: 'María González',   fechaNacimiento: '1980-07-22' },
-  { dni: '35111222', telefono: '5491155553333', nombre: 'Carlos Rodríguez', fechaNacimiento: '1990-11-10' },
-  { dni: '40555666', telefono: '5491155554444', nombre: 'Lucía Fernández',  fechaNacimiento: '1995-02-28' },
+const clientes: MockClienteRow[] = [
+  { dni: '30123456', nombre: 'Juan Pérez',       primerNombre: 'Juan',   telefono: '5491126763301', cuil: '20301234561' },
+  { dni: '28987654', nombre: 'María González',   primerNombre: 'María',  telefono: '5491126763301', cuil: '27289876541' },
+  { dni: '35111222', nombre: 'Carlos Rodríguez', primerNombre: 'Carlos', telefono: '5491155553333', cuil: '20351112221' },
+  { dni: '40555666', nombre: 'Lucía Fernández',  primerNombre: 'Lucía',  telefono: '5491155554444', cuil: '27405556661' },
 ];
 
-const creditos: Credito[] = [
-  // Cliente con un crédito en mora
-  { id: 'CR-001', dni: '30123456', estado: 'en_mora',   monto: 500000, cuotas: 12, cuotasPagadas: 3,
-    proximoVencimiento: '2026-05-10', saldoPendiente: 380000, saldoEnMora: 45000, diasMora: 17 },
+const operaciones: MockOperacionRow[] = [
+  // Juan Pérez - préstamo en mora
+  {
+    id: 'CR-001', dni: '30123456', producto: 'TARJETA DE DEBITO', plan: 'TARJETA Nov 25',
+    estado: 'Activa', fechaLiquidacion: '2025-11-15', primerVencimiento: '2025-12-10',
+    totalCuotas: 12, cuotasPagadas: 3, cuotasImpagas: 9, cuotasImpagasVencidas: 1,
+    importeCuota: 45000, capitalOriginal: 500000, saldoTotal: 380000, saldoEnMora: 45000,
+    punitorios: 2300,
+  },
 
-  // Cliente con un crédito recién liquidado (debería disparar bienvenida)
-  { id: 'CR-002', dni: '28987654', estado: 'liquidado', monto: 800000, cuotas: 18, cuotasPagadas: 0,
-    proximoVencimiento: '2026-05-15', saldoPendiente: 800000, saldoEnMora: 0, diasMora: 0,
-    fechaLiquidacion: '2026-04-25' },
+  // María González - préstamo recién liquidado (test welcome)
+  {
+    id: 'CR-002', dni: '28987654', producto: 'TARJETA DE DEBITO', plan: 'TARJETA Abril 26',
+    estado: 'Activa', fechaLiquidacion: new Date().toISOString().slice(0, 10), // hoy
+    primerVencimiento: '2026-05-15',
+    totalCuotas: 18, cuotasPagadas: 0, cuotasImpagas: 18, cuotasImpagasVencidas: 0,
+    importeCuota: 50000, capitalOriginal: 800000, saldoTotal: 800000, saldoEnMora: 0,
+    punitorios: 0,
+  },
 
-  // Cliente con un crédito al día
-  { id: 'CR-003', dni: '35111222', estado: 'pendiente', monto: 300000, cuotas: 6,  cuotasPagadas: 5,
-    proximoVencimiento: '2026-05-05', saldoPendiente: 55000,  saldoEnMora: 0, diasMora: 0 },
+  // Carlos Rodríguez - préstamo al día
+  {
+    id: 'CR-003', dni: '35111222', producto: 'TARJETA DE DEBITO', plan: 'TARJETA Oct 25',
+    estado: 'Activa', fechaLiquidacion: '2025-10-01', primerVencimiento: '2025-11-05',
+    totalCuotas: 6, cuotasPagadas: 5, cuotasImpagas: 1, cuotasImpagasVencidas: 0,
+    importeCuota: 55000, capitalOriginal: 300000, saldoTotal: 55000, saldoEnMora: 0,
+    punitorios: 0,
+  },
 
-  // Otro recién liquidado para probar el job de bienvenidas
-  { id: 'CR-004', dni: '40555666', estado: 'pendiente', monto: 250000, cuotas: 9,  cuotasPagadas: 0,
-    proximoVencimiento: '2026-05-20', saldoPendiente: 250000, saldoEnMora: 0, diasMora: 0,
-    fechaLiquidacion: '2026-04-26' },
+  // Lucía Fernández - préstamo recién liquidado
+  {
+    id: 'CR-004', dni: '40555666', producto: 'TARJETA DE DEBITO', plan: 'TARJETA Abril 26',
+    estado: 'Activa', fechaLiquidacion: new Date().toISOString().slice(0, 10),
+    primerVencimiento: '2026-05-20',
+    totalCuotas: 9, cuotasPagadas: 0, cuotasImpagas: 9, cuotasImpagasVencidas: 0,
+    importeCuota: 32000, capitalOriginal: 250000, saldoTotal: 250000, saldoEnMora: 0,
+    punitorios: 0,
+  },
 ];
 
-export function buscarClientePorTelefono(telefono: string): Cliente | undefined {
-  return clientes.find(c => c.telefono === telefono);
+function rowToCliente(row: MockClienteRow): Cliente {
+  return { ...row };
 }
 
-export function buscarClientePorDni(dni: string): Cliente | undefined {
-  return clientes.find(c => c.dni === dni);
+function rowToOperacion(row: MockOperacionRow): Operacion {
+  return {
+    ...row,
+    esCredito: esProductoPrestamo(row.producto),
+  };
 }
 
-export function getCreditosPorDni(dni: string): Credito[] {
-  return creditos.filter(c => c.dni === dni);
+function calcularResumen(cliente: Cliente, ops: Operacion[]): ResumenCliente {
+  const activas = ops.filter(op => op.estado === 'Activa');
+  return {
+    cliente,
+    operaciones: ops,
+    saldoTotal: activas.reduce((s, op) => s + op.saldoTotal, 0),
+    saldoEnMora: activas.reduce((s, op) => s + op.saldoEnMora, 0),
+    cuotaMensualTotal: activas.reduce((s, op) => s + op.importeCuota, 0),
+    cuotasImpagas: activas.reduce((s, op) => s + op.cuotasImpagas, 0),
+    cuotasImpagasVencidas: activas.reduce((s, op) => s + op.cuotasImpagasVencidas, 0),
+    hayPrestamoActivo: activas.some(op => op.esCredito),
+  };
 }
 
-export function getCreditosLiquidados(): Credito[] {
-  return creditos.filter(c => c.estado === 'liquidado');
-}
+export const mockDb: DataSource = {
+  async buscarClientePorDni(dni: string) {
+    const row = clientes.find(c => c.dni === dni);
+    return row ? rowToCliente(row) : undefined;
+  },
+
+  async getOperacionesPorDni(dni: string) {
+    return operaciones.filter(op => op.dni === dni).map(rowToOperacion);
+  },
+
+  async getResumenPorDni(dni: string) {
+    const clienteRow = clientes.find(c => c.dni === dni);
+    if (!clienteRow) return undefined;
+    const ops = operaciones.filter(op => op.dni === dni).map(rowToOperacion);
+    return calcularResumen(rowToCliente(clienteRow), ops);
+  },
+
+  async getPrestamosRecienLiquidados(horasAtras: number) {
+    const cutoff = Date.now() - horasAtras * 3_600_000;
+    return operaciones
+      .map(rowToOperacion)
+      .filter(op => {
+        if (!op.esCredito) return false;
+        if (op.estado !== 'Activa') return false;
+        const t = new Date(op.fechaLiquidacion).getTime();
+        return !Number.isNaN(t) && t >= cutoff;
+      });
+  },
+};
