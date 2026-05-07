@@ -3,12 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "chat": "tsx src/cli.ts",
-    "welcome-job": "tsx src/jobs/welcomeJob.ts"
+    "chat": "tsx src/cli.ts"
   },
   "dependencies": {
     "@google/genai": "^1.48.0",

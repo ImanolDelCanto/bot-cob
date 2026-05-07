@@ -35,6 +35,11 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
       config: {
         systemInstruction: SYSTEM_PROMPT,
         tools: [{ functionDeclarations }],
+        // Desactivamos "thinking" porque con Gemini 2.5 Flash + function calling a veces
+        // consume todo el budget pensando y devuelve content vacío (finishReason=STOP sin texto).
+        // Para un bot conversacional no aporta razonamiento útil.
+        thinkingConfig: { thinkingBudget: 0 },
+        maxOutputTokens: 2048,
       },
     });
 
