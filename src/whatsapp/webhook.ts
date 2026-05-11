@@ -4,6 +4,7 @@ import { chat } from '../llm/agent.js';
 import { appendMessages } from '../memory/conversations.js';
 import { downloadMediaFromMeta } from './media.js';
 import { saveComprobante } from '../storage/comprobantes.js';
+import { enqueueMessage, dropBuffer } from './messageBuffer.js';
 
 const HUMANO = '+54 9 11 2621-4000';
 const HORARIO = 'Lun a Vie de 9 a 17hs';
@@ -89,6 +90,10 @@ router.post('/webhook', async (req: Request, res: Response) => {
 
     // === Mensaje no-texto (imagen, audio, PDF, etc.) — NO llamamos al LLM ===
     if (!text) {
+      // Si había mensajes de texto en cola, los descartamos: el flujo de
+      // imagen/audio tiene su propia respuesta automática y mezclarla con
+      // una respuesta del LLM sería confuso para el cliente.
+      dropBuffer(from);
       // Imagen o documento → tratamos como posible comprobante: descargamos de Meta,
       // subimos a Supabase Storage y registramos en la tabla `comprobantes`.
       if (tipo === 'image' || tipo === 'document') {
@@ -149,10 +154,13 @@ router.post('/webhook', async (req: Request, res: Response) => {
     }
 
     console.log(`📩 ${from}: ${text}`);
-    const respuesta = await chat(from, text);
-    console.log(`📤 → ${from}: ${respuesta}`);
-
-    await sendWhatsAppMessage(from, respuesta);
+    // Encolamos el mensaje. Si el cliente manda más mensajes en los próximos
+    // `messageDebounceMs` ms, se agrupan y se procesan como una sola turno.
+    enqueueMessage(from, text, async (telefono, combinedText) => {
+      const respuesta = await chat(telefono, combinedText);
+      console.log(`📤 → ${telefono}: ${respuesta}`);
+      await sendWhatsAppMessage(telefono, respuesta);
+    });
   } catch (err) {
     console.error('Error procesando webhook de WhatsApp:', err);
   }

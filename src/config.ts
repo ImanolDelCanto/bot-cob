@@ -25,6 +25,11 @@ export const config = {
   // Cuántos mensajes del historial le mandamos a Gemini en cada turno.
   // Si la conversación crece más, se envían solo los últimos N.
   historyLimit: Number(process.env.CONVERSATION_HISTORY_LIMIT ?? 60),
+  // Ventana de "silencio" para agrupar mensajes consecutivos del mismo teléfono
+  // antes de invocar al LLM. Si el cliente manda 2-3 mensajes seguidos (típico
+  // en WhatsApp donde la gente piensa en voz alta), los juntamos y respondemos
+  // una sola vez. En 0 se desactiva el debounce.
+  messageDebounceMs: Number(process.env.MESSAGE_DEBOUNCE_MS ?? 6000),
   // Token simple para proteger los endpoints /admin/*. Si está vacío, los endpoints quedan deshabilitados.
   adminToken: process.env.ADMIN_TOKEN ?? '',
   // Ventana horaria (zona horaria Argentina, UTC-3) en la que los jobs proactivos
