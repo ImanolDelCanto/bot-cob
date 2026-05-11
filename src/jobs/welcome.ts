@@ -115,8 +115,15 @@ export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<Welco
       `• Monto: $${monto}\n` +
       `• Cuotas: ${op.totalCuotas}\n` +
       `• Primer vencimiento: ${fechaVenc}\n\n` +
-      `Para ver medios de pago o consultar saldo, respondé "MEDIOS" o "SALDO".\n` +
-      `Si necesitás otra cosa, escribime y te ayudo. — Mutu, Mutual Protecap`;
+      `Como socio de Mutual Protecap también tenés acceso a:\n` +
+      `• Ayudas económicas\n` +
+      `• Cobertura de salud y emergencias médicas\n` +
+      `• Electrohogar con financiación\n` +
+      `• Turismo a precios preferenciales\n` +
+      `• Comunidad Protecap: beneficios y descuentos en comercios\n\n` +
+      `Más info: https://protecap.mutual.ar/\n` +
+      `Beneficios y descuentos: https://comunidad.protecap.mutual.ar/\n\n` +
+      `Si querés consultar saldo, medios de pago o cualquier otra cosa, escribime. — Mutu, Mutual Protecap`;
 
     if (dryRun) {
       console.log(`[dry-run] → ${cliente.telefono}: ${texto}`);
