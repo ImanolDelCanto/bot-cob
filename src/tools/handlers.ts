@@ -80,8 +80,20 @@ export const handlers: Record<string, ToolHandler> = {
 
   obtener_medios_de_pago: () => ({
     medios: [
+      // OPCIÓN PREFERIDA: portal autogestionable. Mostrar primero al cliente.
+      // TODO: cambiar la URL cuando esté el webapp real. Por ahora es placeholder.
+      {
+        tipo: 'cuenta_corriente_online',
+        url: 'https://cuenta.protecap.mutual.ar/',
+        autogestionable: true,
+        instrucciones:
+          'Desde tu cuenta corriente online podés ver tu saldo en tiempo real, pagar la cuota ' +
+          'o el saldo en mora, y revisar tus movimientos. Es la forma más cómoda y rápida — sin ' +
+          'esperar a nadie. Ingresá con tu DNI en https://cuenta.protecap.mutual.ar/',
+      },
       {
         tipo: 'transferencia',
+        autogestionable: true,
         empresa: 'PROTECAP',
         cuit: '30-70954656-9',
         banco: 'Banco Patagonia',
@@ -106,6 +118,8 @@ export const handlers: Record<string, ToolHandler> = {
     ],
     contacto_humano: '+54 9 11 2621-4000',
     horario_humano: 'Lunes a Viernes de 9 a 17hs',
-    nota: 'Después de pagar, enviá el comprobante por este mismo chat.',
+    nota:
+      'La cuenta corriente online y la transferencia son autogestionables — el cliente puede pagar solo. ' +
+      'Rapipago y tarjeta requieren intervención humana. Después de pagar por transferencia, pedir comprobante por el mismo chat.',
   }),
 };
