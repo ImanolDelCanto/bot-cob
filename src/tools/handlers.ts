@@ -81,15 +81,14 @@ export const handlers: Record<string, ToolHandler> = {
   obtener_medios_de_pago: () => ({
     medios: [
       // OPCIÓN PREFERIDA: portal autogestionable. Mostrar primero al cliente.
-      // TODO: cambiar la URL cuando esté el webapp real. Por ahora es placeholder.
       {
         tipo: 'cuenta_corriente_online',
-        url: 'https://cuenta.protecap.mutual.ar/',
+        url: 'https://mockpagos.vercel.app/login',
         autogestionable: true,
         instrucciones:
           'Desde tu cuenta corriente online podés ver tu saldo en tiempo real, pagar la cuota ' +
           'o el saldo en mora, y revisar tus movimientos. Es la forma más cómoda y rápida — sin ' +
-          'esperar a nadie. Ingresá con tu DNI en https://cuenta.protecap.mutual.ar/',
+          'esperar a nadie. Ingresá con tu DNI en https://mockpagos.vercel.app/login',
       },
       {
         tipo: 'transferencia',
