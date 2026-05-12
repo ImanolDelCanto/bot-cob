@@ -9,6 +9,31 @@ import { enqueueMessage, dropBuffer } from './messageBuffer.js';
 const HUMANO = '+54 9 11 2621-4000';
 const HORARIO = 'Lun a Vie de 9 a 17hs';
 
+// Detecta si el mensaje del cliente es un cierre puro: "gracias" / variantes
+// o solo emojis. En esos casos respondemos 👍 sin consultar al LLM para no
+// reabrir la conversación con un párrafo cuando el cliente ya se estaba
+// despidiendo. Saltea el costo y latencia de una llamada a Gemini.
+//
+// Conservador a propósito: solo matchea cierres muy claros. Si el cliente
+// dice "ok, una cosa más", "perfecto, ¿y los intereses?", etc., NO matchea
+// y cae al flujo normal del LLM.
+const GRACIAS_REGEX = /^[\s¡!.,;]*(?:muchas\s+|mil\s+)?(?:gracias|graciass+|graci+as|thanks?|thx|grax)[\s.,;!¡?¿]*$/iu;
+// Sin letras ni números — solo puntuación, símbolos y/o emojis.
+const NO_LETTERS_REGEX = /^[^\p{L}\p{N}]+$/u;
+// Tiene que haber al menos un emoji real (no basta puntuación tipo "..." o "??").
+const HAS_EMOJI_REGEX = /\p{Extended_Pictographic}/u;
+
+export function isTerminalCloser(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // Mensajes largos no son cierre. 40 chars cubre "muchísimas gracias!!!" tranquilo.
+  if (trimmed.length > 40) return false;
+  if (GRACIAS_REGEX.test(trimmed)) return true;
+  // Solo símbolos + al menos un emoji = cierre. Un "??" solo NO cierra (cliente confundido).
+  if (NO_LETTERS_REGEX.test(trimmed) && HAS_EMOJI_REGEX.test(trimmed)) return true;
+  return false;
+}
+
 // Mensajes para casos donde NO podemos procesar el archivo (audios u otros tipos).
 function respuestaNoProcesable(tipo: string): string {
   if (tipo === 'audio' || tipo === 'voice') {
@@ -157,6 +182,20 @@ router.post('/webhook', async (req: Request, res: Response) => {
     // Encolamos el mensaje. Si el cliente manda más mensajes en los próximos
     // `messageDebounceMs` ms, se agrupan y se procesan como una sola turno.
     enqueueMessage(from, text, async (telefono, combinedText) => {
+      // Short-circuit: si el cliente solo está cerrando ("gracias" o un
+      // emoji), respondemos 👍 sin gastar una llamada al LLM. Esto cierra
+      // la conversación con calidez sin que el bot vuelva a tirar opciones.
+      if (isTerminalCloser(combinedText)) {
+        const respuesta = '👍';
+        console.log(`📤 → ${telefono}: [closer] ${respuesta}`);
+        await appendMessages(telefono, [
+          { role: 'user', parts: [{ text: combinedText }] },
+          { role: 'model', parts: [{ text: respuesta }] },
+        ]);
+        await sendWhatsAppMessage(telefono, respuesta);
+        return;
+      }
+
       const respuesta = await chat(telefono, combinedText);
       console.log(`📤 → ${telefono}: ${respuesta}`);
       await sendWhatsAppMessage(telefono, respuesta);
