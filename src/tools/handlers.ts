@@ -1,4 +1,5 @@
 import { db } from '../data/index.js';
+import { calcularCargoPorCliente } from '../data/cargosAtraso.js';
 
 type ToolHandler = (input: Record<string, any>) => Promise<unknown> | unknown;
 
@@ -42,23 +43,45 @@ export const handlers: Record<string, ToolHandler> = {
 
     const fechaIso = fechaRelevante ? fechaRelevante.toISOString().slice(0, 10) : null;
 
+    // Cargos por atraso calculados al día de HOY sobre cada cuota vencida.
+    // El endpoint del sistema no los devuelve actualizados a la fecha de consulta,
+    // por eso los calculamos acá. Detalle en src/data/cargosAtraso.ts.
+    const cargoPorAtraso = calcularCargoPorCliente(opsActivas, hoy);
+    const saldoARegularizarHoy = Math.round((resumen.saldoEnMora + cargoPorAtraso) * 100) / 100;
+    const saldoACancelarHoy = Math.round((resumen.saldoTotal + cargoPorAtraso) * 100) / 100;
+
     return {
       encontrado: true,
       cliente: { nombre: resumen.cliente.nombre },
       // ⭐ DATO PRIMARIO: usar SIEMPRE este resumen agregado.
       // NO descomponer la respuesta por operación — para el cliente la deuda es UNA SOLA.
       resumen: {
+        // Saldos "base" del endpoint (sin cargos por atraso al día de hoy).
+        // NO los uses directamente para responder "cuánto debo" cuando hay mora.
         saldo_total: resumen.saldoTotal,
         saldo_en_mora: resumen.saldoEnMora,
+
+        // ⭐ Cargos por atraso (punitorios) calculados al día de hoy sobre cada
+        // cuota vencida. Suben cada día que el cliente no paga.
+        cargo_por_atraso: cargoPorAtraso,
+        // ⭐ "El valor REAL de la cuenta hoy" — saldos con cargos sumados.
+        // Si el cliente está en mora y pregunta cuánto debe pagar para regularizar,
+        // usá saldo_a_regularizar_hoy. Si pregunta cuánto para cancelar todo el
+        // crédito, usá saldo_a_cancelar_hoy.
+        saldo_a_regularizar_hoy: saldoARegularizarHoy,
+        saldo_a_cancelar_hoy: saldoACancelarHoy,
+
         // Cuota mensual PURA: lo que el cliente paga si está al día, sin punitorios ni mora.
         // Suma préstamo + cuota social ($15.000 fijo) + asistencia (valor en el nombre).
         cuota_mensual_pura: resumen.cuotaMensualTotal,
         estado: tieneMora ? 'en_mora' : 'al_dia',
         hay_prestamo_activo: resumen.hayPrestamoActivo,
         // SI estado === 'en_mora' usá ESTE bloque. NO menciones "próxima cuota" ni "cuándo vence".
-        // Hablale al cliente del saldo vencido y los días de atraso.
+        // Hablale al cliente del saldo_vencido_con_cargos (incluye recargos hasta hoy).
         mora: tieneMora ? {
-          saldo_vencido: resumen.saldoEnMora,
+          saldo_vencido: resumen.saldoEnMora,                  // SIN cargos
+          saldo_vencido_con_cargos: saldoARegularizarHoy,      // CON cargos al día de hoy ← usá ESTE
+          cargo_por_atraso: cargoPorAtraso,
           dias_atraso_aprox: Math.max(0, diasAtraso),
           fecha_cuota_mas_vieja_vencida: fechaIso,
         } : null,
