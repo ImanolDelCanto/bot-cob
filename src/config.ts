@@ -29,7 +29,9 @@ export const config = {
   // antes de invocar al LLM. Si el cliente manda 2-3 mensajes seguidos (típico
   // en WhatsApp donde la gente piensa en voz alta), los juntamos y respondemos
   // una sola vez. En 0 se desactiva el debounce.
-  messageDebounceMs: Number(process.env.MESSAGE_DEBOUNCE_MS ?? 6000),
+  // 10s probó ser suficiente para capturar tandas típicas de 3-4 mensajes
+  // sin sentirse lento en mensajes únicos.
+  messageDebounceMs: Number(process.env.MESSAGE_DEBOUNCE_MS ?? 10000),
   // Token simple para proteger los endpoints /admin/*. Si está vacío, los endpoints quedan deshabilitados.
   adminToken: process.env.ADMIN_TOKEN ?? '',
   // Ventana horaria (zona horaria Argentina, UTC-3) en la que los jobs proactivos
