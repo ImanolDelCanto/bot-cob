@@ -104,15 +104,15 @@ export const handlers: Record<string, ToolHandler> = {
         tipo: 'rapipago',
         requiere_asesor_humano: true,
         instrucciones:
-          'Para pagar por Rapipago, contactá a un asesor humano que te genera la boleta. ' +
-          'Llamá al +54 9 11 2621-4000 (Lun-Vie 9-17hs).',
+          'Para pagar por Rapipago, contactá por WhatsApp a un asesor humano que te genera la boleta. ' +
+          'Escribile al +54 9 11 2621-4000 (Lun-Vie 9-17hs). La mutual atiende solo por chat, no recibe llamadas.',
       },
       {
         tipo: 'tarjeta_credito_mercadopago',
         requiere_asesor_humano: true,
         instrucciones:
-          'Aceptamos tarjeta de crédito por Mercado Pago. Esta opción se gestiona con un ' +
-          'asesor humano: llamá al +54 9 11 2621-4000 (Lun-Vie 9-17hs).',
+          'Aceptamos tarjeta de crédito por Mercado Pago. Esta opción se gestiona con un asesor humano: ' +
+          'escribile por WhatsApp al +54 9 11 2621-4000 (Lun-Vie 9-17hs). La mutual atiende solo por chat, no recibe llamadas.',
       },
     ],
     contacto_humano: '+54 9 11 2621-4000',
