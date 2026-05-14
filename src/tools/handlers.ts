@@ -50,6 +50,19 @@ export const handlers: Record<string, ToolHandler> = {
     const saldoARegularizarHoy = Math.round((resumen.saldoEnMora + cargoPorAtraso) * 100) / 100;
     const saldoACancelarHoy = Math.round((resumen.saldoTotal + cargoPorAtraso) * 100) / 100;
 
+    // Datos para evaluar elegibilidad de renovación / nuevo crédito.
+    // Tomamos solo PRÉSTAMOS (esCredito=true), no cuota social/asistencia.
+    const creditosActivos = opsActivas.filter(op => op.esCredito);
+    const creditosCancelados = resumen.operaciones.filter(
+      op => op.esCredito && op.estado.toLowerCase() === 'cancelada'
+    );
+    const porcentajesCredito = creditosActivos
+      .filter(op => op.totalCuotas > 0)
+      .map(op => Math.round((op.cuotasPagadas / op.totalCuotas) * 100));
+    const porcentajeCreditoMaxPagado = porcentajesCredito.length > 0
+      ? Math.max(...porcentajesCredito)
+      : null;
+
     return {
       encontrado: true,
       cliente: { nombre: resumen.cliente.nombre },
@@ -88,6 +101,15 @@ export const handlers: Record<string, ToolHandler> = {
         // SI estado === 'al_dia' usá ESTE bloque. Decile cuándo vence la próxima.
         al_dia: tieneMora ? null : {
           proxima_cuota_fecha: fechaIso,
+        },
+        // ⭐ Datos para evaluar renovación / nuevo crédito (ver sección
+        // "Renovaciones y nuevos créditos" del system prompt).
+        renovacion: {
+          tiene_mora_activa: tieneMora,
+          // % de cuotas pagadas del crédito activo MÁS avanzado (null si no hay crédito activo).
+          porcentaje_credito_pagado: porcentajeCreditoMaxPagado,
+          tiene_credito_cancelado: creditosCancelados.length > 0,
+          tiene_credito_activo: creditosActivos.length > 0,
         },
       },
       // 🚫 SOLO usar este detalle si el cliente PREGUNTA EXPLÍCITAMENTE por sus productos.
