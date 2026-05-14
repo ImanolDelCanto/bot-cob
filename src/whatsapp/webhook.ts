@@ -217,10 +217,32 @@ function normalizeArgentineMobile(phone: string): string {
   return phone;
 }
 
+// Limpia el texto antes de mandarlo a WhatsApp.
+// El LLM tiende a tirar sintaxis Markdown (**negrita**, URLs envueltas en
+// asteriscos) por inercia, y por el prompt no se le va del todo. WhatsApp NO
+// renderiza Markdown — usa *negrita*, _cursiva_, ~tachado~. Lo de **X** queda
+// con los asteriscos visibles y se ve roto.
+//
+// Reglas:
+// 1) URLs no llevan NUNCA asteriscos alrededor. Los strippeamos.
+// 2) Cualquier corrida de 2+ asteriscos se colapsa a uno solo (Markdown bold
+//    → WhatsApp bold). También cubre *** ó **** que algunos modelos meten.
+export function sanitizeForWhatsApp(text: string): string {
+  let out = text;
+  // 1) URLs envueltas en *, **, *** → URL pelada.
+  //    \S+? para que pare antes del asterisco de cierre, y un lookahead que
+  //    excluye puntuación final si quedara fuera del wrap.
+  out = out.replace(/\*+(https?:\/\/\S+?)\*+/g, '$1');
+  // 2) Colapsar corridas de 2+ asteriscos a uno solo.
+  out = out.replace(/\*{2,}/g, '*');
+  return out;
+}
+
 export async function sendWhatsAppMessage(to: string, text: string): Promise<void> {
   const { phoneNumberId, accessToken, apiVersion } = config.whatsapp;
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const destinatario = normalizeArgentineMobile(to);
+  const cuerpo = sanitizeForWhatsApp(text);
 
   const res = await fetch(url, {
     method: 'POST',
@@ -232,7 +254,7 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
       messaging_product: 'whatsapp',
       to: destinatario,
       type: 'text',
-      text: { body: text },
+      text: { body: cuerpo },
     }),
   });
 
