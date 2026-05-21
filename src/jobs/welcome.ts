@@ -115,15 +115,10 @@ export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<Welco
       `• Monto: $${monto}\n` +
       `• Cuotas: ${op.totalCuotas}\n` +
       `• Primer vencimiento: ${fechaVenc}\n\n` +
-      `Como socio de Mutual Protecap también tenés acceso a:\n` +
-      `• Ayudas económicas\n` +
-      `• Cobertura de salud y emergencias médicas\n` +
-      `• Electrohogar con financiación\n` +
-      `• Turismo a precios preferenciales\n` +
-      `• Comunidad Protecap: beneficios y descuentos en comercios\n\n` +
-      `Más info: https://protecap.mutual.ar/\n` +
-      `Beneficios y descuentos: https://comunidad.protecap.mutual.ar/\n\n` +
-      `Si querés consultar saldo, medios de pago o cualquier otra cosa, escribime. — Mutu, Mutual Protecap`;
+      `🎁 Tenemos un beneficio exclusivo para vos por tu crédito nuevo.\n` +
+      `Agendá este número y respondé este mensaje con un "Hola" así te lo cuento. ` +
+      `Es un beneficio que te conviene aprovechar desde tu primera cuota.\n\n` +
+      `Cualquier consulta sobre tu crédito también podés escribirme. — Mutu, Mutual Protecap`;
 
     if (dryRun) {
       console.log(`[dry-run] → ${cliente.telefono}: ${texto}`);

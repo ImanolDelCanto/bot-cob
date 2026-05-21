@@ -22,7 +22,12 @@ export function esProductoPrestamo(producto: string | null | undefined): boolean
 }
 
 // Monto mensual de la CUOTA SOCIAL. Actualizar acá cuando aumente.
-const CUOTA_SOCIAL_MONTO = 15_000;
+export const CUOTA_SOCIAL_MONTO = 15_000;
+
+// true si el Producto es la CUOTA SOCIAL (el addon de membresía mensual).
+export function esCuotaSocial(producto: string | null | undefined): boolean {
+  return (producto ?? '').trim().toUpperCase().startsWith('CUOTA SOCIAL');
+}
 
 /**
  * Devuelve el importe de cuota PURA (sin punitorios ni mora) para una operación.

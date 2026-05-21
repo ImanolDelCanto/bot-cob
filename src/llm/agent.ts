@@ -83,7 +83,7 @@ export async function chat(telefono: string, mensajeUsuario: string): Promise<st
         let resultado: any;
         try {
           resultado = handler
-            ? await handler((fc.args ?? {}) as Record<string, any>)
+            ? await handler((fc.args ?? {}) as Record<string, any>, { telefono })
             : { error: `Tool desconocida: ${fc.name}` };
         } catch (err: any) {
           resultado = { error: String(err?.message ?? err) };

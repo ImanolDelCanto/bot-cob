@@ -40,6 +40,21 @@ export const config = {
   jobs: {
     hourStart: Number(process.env.JOBS_HOUR_START ?? 10),
     hourEnd: Number(process.env.JOBS_HOUR_END ?? 21),
+    // Si true, el server corre los jobs proactivos (welcome, cashback-aviso) solo,
+    // con un scheduler en proceso. Si false, hay que dispararlos a mano por /admin/jobs/*.
+    // Igual NO corre si WhatsApp no está configurado (no tiene sentido mandar mensajes).
+    schedulerEnabled: (process.env.JOBS_SCHEDULER_ENABLED ?? 'true').toLowerCase() !== 'false',
+    // Cada cuántas horas corre cada job. El horario (hourStart/hourEnd) igual los frena fuera de ventana.
+    welcomeEveryHours: Number(process.env.JOBS_WELCOME_EVERY_HOURS ?? 2),
+    cashbackAvisoEveryHours: Number(process.env.JOBS_CASHBACK_EVERY_HOURS ?? 6),
+  },
+  // Programa de cashback: reintegro de un % de la primera cuota del crédito
+  // si el socio paga en tiempo y forma. Ver src/cashback/cashback.ts.
+  cashback: {
+    // Porcentaje de la cuota que se reintegra. 0.10 = 10%.
+    porcentaje: Number(process.env.CASHBACK_PORCENTAJE ?? 0.1),
+    // Cuántos días antes del primer vencimiento se manda el aviso recordatorio.
+    avisoDiasAntes: Number(process.env.CASHBACK_AVISO_DIAS_ANTES ?? 2),
   },
   // Toggle para alternar entre mock y endpoint real de la mutual.
   // true → usa el mock embebido en src/data/mockDb.ts (default, dev/testing)

@@ -39,4 +39,19 @@ export const functionDeclarations: FunctionDeclaration[] = [
       properties: {},
     },
   },
+  {
+    name: 'inscribir_cashback',
+    description:
+      'Inscribe al socio en el programa de cashback: reintegro de un % de su PRIMERA cuota si la paga en tiempo y forma. ' +
+      'Usar SOLO después de verificar el DNI, cuando el socio responde al mensaje de bienvenida de su crédito nuevo y querés activarle el beneficio. ' +
+      'Devuelve el monto exacto del reintegro (monto_cashback), el importe de la cuota y la fecha del primer vencimiento, para que se los comuniques. ' +
+      'Si devuelve inscripto=false con motivo=sin_credito_elegible, el socio no tiene un crédito con la primera cuota pendiente (no le ofrezcas el beneficio).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        dni: { type: Type.STRING, description: 'DNI del cliente, ya verificado con verificar_dni' },
+      },
+      required: ['dni'],
+    },
+  },
 ];

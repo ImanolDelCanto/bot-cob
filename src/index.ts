@@ -4,11 +4,18 @@ import { chat } from './llm/agent.js';
 import { resetHistorial } from './memory/conversations.js';
 import whatsappRouter from './whatsapp/webhook.js';
 import { runWelcomeJob } from './jobs/welcome.js';
+import { runCashbackAvisoJob } from './jobs/cashbackAviso.js';
+import { startScheduler } from './jobs/scheduler.js';
 import {
   listPendientes as listComprobantesPendientes,
   marcarProcesado as marcarComprobanteProcesado,
   marcarRechazado as marcarComprobanteRechazado,
 } from './storage/comprobantes.js';
+import {
+  listPendientesReintegro,
+  marcarReintegrado,
+  descartar as descartarCashback,
+} from './cashback/cashback.js';
 
 const app = express();
 app.use(express.json());
@@ -71,6 +78,77 @@ app.post('/admin/jobs/welcome', requireAdmin, async (req: Request, res: Response
     res.json(result);
   } catch (err: any) {
     console.error('Error en /admin/jobs/welcome:', err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
+// Dispara el job de aviso de cashback (recordatorio 48hs antes del vencimiento).
+// Body opcional: { dryRun: true }, { force: true } (igual que el de welcome).
+app.post('/admin/jobs/cashback-aviso', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const dryRun = req.body?.dryRun === true;
+    const force = req.body?.force === true;
+    const result = await runCashbackAvisoJob({ dryRun, force });
+    res.json(result);
+  } catch (err: any) {
+    console.error('Error en /admin/jobs/cashback-aviso:', err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
+// Lista los cashbacks abiertos (inscripto / aviso_enviado) para que un humano
+// revise quién pagó en tiempo y forma y cierre el ciclo (reintegro o descarte).
+app.get('/admin/cashback/pendientes', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const limit = Number(req.query.limit ?? 100);
+    const result = await listPendientesReintegro({ limit });
+    res.json({ cashbacks: result });
+  } catch (err: any) {
+    console.error('Error en /admin/cashback/pendientes:', err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
+// Marca un cashback como reintegrado (el humano confirmó pago en fecha + hizo la devolución).
+// Body: { reintegrado_por: string, notas?: string }
+app.post('/admin/cashback/:id/marcar-reintegrado', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'id inválido' });
+    }
+    const reintegradoPor = String(req.body?.reintegrado_por ?? '').trim();
+    if (!reintegradoPor) {
+      return res.status(400).json({ error: 'Falta reintegrado_por (nombre del operador)' });
+    }
+    await marcarReintegrado({
+      id,
+      reintegradoPor,
+      notas: typeof req.body?.notas === 'string' ? req.body.notas : undefined,
+    });
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('Error en /admin/cashback/:id/marcar-reintegrado:', err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
+// Descarta un cashback (no pagó a tiempo / no corresponde).
+// Body: { motivo: string }
+app.post('/admin/cashback/:id/descartar', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'id inválido' });
+    }
+    const motivo = String(req.body?.motivo ?? '').trim();
+    if (!motivo) {
+      return res.status(400).json({ error: 'Falta motivo del descarte' });
+    }
+    await descartarCashback({ id, motivo });
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('Error en /admin/cashback/:id/descartar:', err);
     res.status(500).json({ error: String(err?.message ?? err) });
   }
 });
@@ -141,6 +219,10 @@ app.listen(config.port, () => {
   console.log(`   GET  /whatsapp/webhook   (verificación de Meta)`);
   console.log(`   POST /whatsapp/webhook   (mensajes entrantes)`);
   console.log(`   POST /admin/jobs/welcome              (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/jobs/cashback-aviso       (Bearer ADMIN_TOKEN)`);
+  console.log(`   GET  /admin/cashback/pendientes       (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/cashback/:id/marcar-reintegrado    (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/cashback/:id/descartar             (Bearer ADMIN_TOKEN)`);
   console.log(`   GET  /admin/comprobantes/pendientes   (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/comprobantes/:id/marcar-procesado  (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/comprobantes/:id/marcar-rechazado  (Bearer ADMIN_TOKEN)`);
@@ -149,5 +231,14 @@ app.listen(config.port, () => {
   }
   if (!config.adminToken) {
     console.log(`   ⚠️  ADMIN_TOKEN no configurado: endpoints /admin/* deshabilitados`);
+  }
+
+  // Scheduler de jobs proactivos. Solo si está habilitado Y WhatsApp configurado
+  // (mandar mensajes sin credenciales no tiene sentido y solo loguearía errores).
+  if (config.jobs.schedulerEnabled && isWhatsAppConfigured()) {
+    startScheduler();
+  } else {
+    const motivo = !config.jobs.schedulerEnabled ? 'JOBS_SCHEDULER_ENABLED=false' : 'WhatsApp no configurado';
+    console.log(`   ⏸️  Scheduler de jobs apagado (${motivo}). Disparalos a mano por /admin/jobs/*`);
   }
 });

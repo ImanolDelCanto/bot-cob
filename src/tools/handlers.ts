@@ -1,7 +1,14 @@
 import { db } from '../data/index.js';
 import { calcularCargoPorCliente } from '../data/cargosAtraso.js';
+import { inscribir as inscribirCashback } from '../cashback/cashback.js';
 
-type ToolHandler = (input: Record<string, any>) => Promise<unknown> | unknown;
+// Contexto del turno que el agente inyecta a cada handler (además de los args del LLM).
+// Sirve para datos que NO vienen del modelo, como el teléfono de WhatsApp del cliente.
+export interface ToolContext {
+  telefono: string;
+}
+
+type ToolHandler = (input: Record<string, any>, ctx: ToolContext) => Promise<unknown> | unknown;
 
 export const handlers: Record<string, ToolHandler> = {
   verificar_dni: async ({ dni }) => {
@@ -121,6 +128,10 @@ export const handlers: Record<string, ToolHandler> = {
         estado: op.estado,
       })),
     };
+  },
+
+  inscribir_cashback: async ({ dni }, ctx) => {
+    return await inscribirCashback(String(dni), ctx.telefono);
   },
 
   obtener_medios_de_pago: () => ({
