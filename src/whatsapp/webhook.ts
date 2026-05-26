@@ -1,10 +1,35 @@
 import { Router, type Request, type Response } from 'express';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { config, isWhatsAppConfigured } from '../config.js';
 import { chat } from '../llm/agent.js';
 import { appendMessages } from '../memory/conversations.js';
 import { downloadMediaFromMeta } from './media.js';
 import { saveComprobante } from '../storage/comprobantes.js';
 import { enqueueMessage, dropBuffer } from './messageBuffer.js';
+
+// Verifica el header X-Hub-Signature-256 que Meta envía con cada webhook.
+// El valor es "sha256=<hex>" donde el HMAC se computa sobre el body crudo
+// usando el App Secret. Sin esto, cualquiera con la URL pública podría
+// fabricar mensajes falsos y hacer que el bot procese/responda.
+function verifyMetaSignature(rawBody: Buffer | undefined, sigHeader: string | undefined, appSecret: string): boolean {
+  if (!rawBody || !sigHeader || !appSecret) return false;
+  const [algo, sig] = sigHeader.split('=');
+  if (algo !== 'sha256' || !sig) return false;
+
+  const expected = createHmac('sha256', appSecret).update(rawBody).digest();
+  let provided: Buffer;
+  try {
+    provided = Buffer.from(sig, 'hex');
+  } catch {
+    return false;
+  }
+  if (provided.length !== expected.length) return false;
+  return timingSafeEqual(provided, expected);
+}
+
+// Solo logueamos el warning una vez por proceso para no inundar los logs
+// si Meta hace miles de POSTs sin App Secret configurado.
+let warnedAboutMissingAppSecret = false;
 
 const HUMANO = '+54 9 11 2621-4000';
 const HORARIO = 'Lun a Vie de 9 a 17hs';
@@ -91,8 +116,26 @@ router.get('/webhook', (req: Request, res: Response) => {
 
 // POST /whatsapp/webhook → mensajes entrantes y eventos de status.
 // Meta espera respuesta 200 rápida; si tardás, reintenta y duplica mensajes.
-// Por eso respondemos primero y procesamos después.
+// Por eso verificamos firma rápido y respondemos 200, después procesamos.
 router.post('/webhook', async (req: Request, res: Response) => {
+  // Verificación de firma HMAC-SHA256 contra el App Secret. Si está configurado
+  // y la firma no coincide → 401 (Meta loguea como entrega fallida y nosotros
+  // no procesamos un payload potencialmente falso).
+  if (config.whatsapp.appSecret) {
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    const sigHeader = req.header('x-hub-signature-256') ?? undefined;
+    if (!verifyMetaSignature(rawBody, sigHeader, config.whatsapp.appSecret)) {
+      console.warn('❌ Webhook con firma inválida — rechazado');
+      return res.sendStatus(401);
+    }
+  } else if (!warnedAboutMissingAppSecret) {
+    console.warn(
+      '⚠️  Webhook recibido SIN verificación de firma (WHATSAPP_APP_SECRET vacío). ' +
+      'Inseguro para producción — cualquiera con la URL pública puede fabricar mensajes.'
+    );
+    warnedAboutMissingAppSecret = true;
+  }
+
   res.sendStatus(200);
 
   if (!isWhatsAppConfigured()) {

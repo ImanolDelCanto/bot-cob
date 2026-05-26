@@ -15,6 +15,11 @@ export const config = {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN ?? '',
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? '',
     apiVersion: process.env.WHATSAPP_API_VERSION ?? 'v21.0',
+    // App Secret de la app de Meta. Se usa para verificar el HMAC-SHA256 de cada
+    // webhook entrante (header X-Hub-Signature-256). Si está vacío, el webhook NO
+    // verifica firma — inseguro para producción. Conseguir en developers.facebook.com
+    // → tu app → Configuración → Básica → App Secret.
+    appSecret: process.env.WHATSAPP_APP_SECRET ?? '',
   },
   supabase: {
     url: mustGetEnv('SUPABASE_URL'),

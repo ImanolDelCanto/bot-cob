@@ -16,13 +16,50 @@ export interface ComprobantePersistido {
   archivoPath: string;
 }
 
+// Whitelist de mime types aceptados. Cualquier otro tipo se rechaza —
+// defendemos contra archivos raros (ejecutables, scripts, etc.) que podrían
+// llegar si el webhook se filtra sin firma.
+const MIME_WHITELIST = new Set<string>([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'application/pdf',
+]);
+
+// Tope de tamaño por archivo. WhatsApp permite hasta 100MB, pero un comprobante
+// real raramente pasa de 1-2MB. 10MB es holgado sin abrir la puerta a llenar el
+// bucket con basura.
+const MAX_TAMANO_BYTES = 10 * 1024 * 1024;
+
 // Sube el archivo al bucket de Supabase y registra una fila en `comprobantes`.
+// Valida antes: teléfono numérico (path traversal), mime whitelist, tamaño.
 export async function saveComprobante(input: {
   telefono: string;
   buffer: Buffer;
   mimeType: string;
 }): Promise<ComprobantePersistido> {
-  const ext = mimeToExtension(input.mimeType);
+  // El teléfono se usa como prefijo de path en el bucket. Permitimos solo
+  // dígitos para evitar cualquier intento de path traversal (`../`, `/`, etc.)
+  // si el webhook se filtra sin verificación de firma.
+  if (!/^\d{6,20}$/.test(input.telefono)) {
+    throw new Error('Teléfono inválido para guardar comprobante');
+  }
+
+  const mimeNormalizado = (input.mimeType ?? '').toLowerCase().split(';')[0].trim();
+  if (!MIME_WHITELIST.has(mimeNormalizado)) {
+    throw new Error(`Tipo de archivo no permitido: ${mimeNormalizado || 'desconocido'}`);
+  }
+
+  if (!input.buffer || input.buffer.length === 0) {
+    throw new Error('Archivo vacío');
+  }
+  if (input.buffer.length > MAX_TAMANO_BYTES) {
+    throw new Error(`Archivo supera el tope de ${MAX_TAMANO_BYTES} bytes (recibido: ${input.buffer.length})`);
+  }
+
+  const ext = mimeToExtension(mimeNormalizado);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const archivoPath = `${input.telefono}/${stamp}.${ext}`;
 
