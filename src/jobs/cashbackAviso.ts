@@ -112,10 +112,11 @@ async function armarMensaje(cb: CashbackRow): Promise<string> {
 
   const saludo = nombre ? `¡Hola ${nombre}!` : '¡Hola!';
   const fecha = formatFechaCorta(cb.primer_vencimiento);
+  const cuota = cb.importe_cuota.toLocaleString('es-AR');
   const reintegro = cb.monto_cashback.toLocaleString('es-AR');
 
   return (
-    `${saludo} Te recordamos que tu primera cuota vence el ${fecha}.\n\n` +
+    `${saludo} Te recordamos que tu primera cuota de $${cuota} vence el ${fecha}.\n\n` +
     `🎁 Si la pagás en tiempo y forma, te reintegramos $${reintegro} (tu cashback). ` +
     `El reintegro se hace 48hs después del pago.\n\n` +
     `Si necesitás los medios de pago o tenés cualquier duda, escribime. — Mutu, Mutual Protecap`

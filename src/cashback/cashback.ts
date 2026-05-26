@@ -12,7 +12,6 @@
 import { supabase } from '../db/supabase.js';
 import { db } from '../data/index.js';
 import { config } from '../config.js';
-import { esCuotaSocial, importeCuotaPura, CUOTA_SOCIAL_MONTO } from '../data/products.js';
 
 export type CashbackEstado = 'inscripto' | 'aviso_enviado' | 'reintegrado' | 'descartado';
 
@@ -22,8 +21,8 @@ export interface CashbackRow {
   dni: string;
   credito_id: string;
   primer_vencimiento: string; // ISO yyyy-mm-dd — vencimiento de la 1a cuota del préstamo nuevo
-  cuota_social_base: number;  // monto de la cuota social sobre el que se calcula el reintegro
-  monto_cashback: number;     // cuota_social_base * porcentaje
+  importe_cuota: number;      // cuota del crédito sobre la que se calcula el reintegro
+  monto_cashback: number;     // importe_cuota * porcentaje
   porcentaje: number;
   estado: CashbackEstado;
   fecha_inscripcion: string;
@@ -38,7 +37,7 @@ export interface InscripcionResultado {
   motivo?: 'sin_credito_elegible' | 'cliente_no_encontrado';
   ya_estaba?: boolean;
   monto_cashback?: number;
-  cuota_social_base?: number;
+  importe_cuota?: number;
   porcentaje?: number;
   primer_vencimiento?: string;
   credito_id?: string;
@@ -55,18 +54,9 @@ async function buscarCreditoElegible(dni: string) {
   return candidatos[0];
 }
 
-// El reintegro es el 10% de la CUOTA SOCIAL del socio (no de la cuota del préstamo).
-// Buscamos la operación de cuota social y derivamos su monto. Si no la tiene cargada,
-// caemos al monto fijo por default.
-async function getCuotaSocialBase(dni: string): Promise<number> {
-  const ops = await db.getOperacionesPorDni(dni);
-  const social = ops.find(op => esCuotaSocial(op.producto));
-  if (!social) return CUOTA_SOCIAL_MONTO;
-  return importeCuotaPura(social.producto, social.importeCuota);
-}
-
 // Inscribe al socio en el programa. Idempotente: si ya existe un cashback para
-// ese crédito, devuelve el existente sin duplicar.
+// ese crédito, devuelve el existente sin duplicar. El reintegro es el % configurado
+// sobre el importeCuota del crédito (la cuota mensual del préstamo del socio).
 export async function inscribir(dni: string, telefono: string): Promise<InscripcionResultado> {
   const dniLimpio = String(dni).replace(/\D/g, '');
 
@@ -91,7 +81,7 @@ export async function inscribir(dni: string, telefono: string): Promise<Inscripc
       inscripto: true,
       ya_estaba: true,
       monto_cashback: row.monto_cashback,
-      cuota_social_base: row.cuota_social_base,
+      importe_cuota: row.importe_cuota,
       porcentaje: row.porcentaje,
       primer_vencimiento: row.primer_vencimiento,
       credito_id: row.credito_id,
@@ -99,15 +89,14 @@ export async function inscribir(dni: string, telefono: string): Promise<Inscripc
   }
 
   const porcentaje = config.cashback.porcentaje;
-  const cuotaSocialBase = await getCuotaSocialBase(dniLimpio);
-  const montoCashback = Math.round(cuotaSocialBase * porcentaje * 100) / 100;
+  const montoCashback = Math.round(credito.importeCuota * porcentaje * 100) / 100;
 
   const { error: insertErr } = await supabase.from('cashback').insert({
     telefono,
     dni: dniLimpio,
     credito_id: credito.id,
     primer_vencimiento: credito.primerVencimiento,
-    cuota_social_base: cuotaSocialBase,
+    importe_cuota: credito.importeCuota,
     monto_cashback: montoCashback,
     porcentaje,
     estado: 'inscripto',
@@ -119,7 +108,7 @@ export async function inscribir(dni: string, telefono: string): Promise<Inscripc
     inscripto: true,
     ya_estaba: false,
     monto_cashback: montoCashback,
-    cuota_social_base: cuotaSocialBase,
+    importe_cuota: credito.importeCuota,
     porcentaje,
     primer_vencimiento: credito.primerVencimiento,
     credito_id: credito.id,

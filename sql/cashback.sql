@@ -16,8 +16,8 @@ create table if not exists cashback (
   dni                text        not null,
   credito_id         text        not null unique,   -- op.id del préstamo nuevo; unique → inscripción idempotente
   primer_vencimiento date        not null,           -- vencimiento de la 1a cuota del préstamo (deadline para pagar a tiempo)
-  cuota_social_base  numeric      not null,          -- monto de la cuota social sobre el que se calcula el reintegro
-  monto_cashback     numeric      not null,          -- cuota_social_base * porcentaje, congelado al inscribir
+  importe_cuota      numeric      not null,          -- cuota mensual del crédito sobre la que se calcula el reintegro
+  monto_cashback     numeric      not null,          -- importe_cuota * porcentaje, congelado al inscribir
   porcentaje         numeric      not null,          -- el % aplicado (ej 0.10), por si cambia a futuro
   estado             text         not null default 'inscripto',
   fecha_inscripcion  timestamptz  not null default now(),
