@@ -21,12 +21,39 @@ export function esProductoPrestamo(producto: string | null | undefined): boolean
   return PRESTAMO_PRODUCTOS.has(producto.trim().toUpperCase());
 }
 
-// Monto mensual de la CUOTA SOCIAL. Actualizar acá cuando aumente.
+// Monto mensual de la CUOTA SOCIAL al día de hoy. Para cuotas viejas, ver el
+// histórico abajo — la cuota social cambia con el tiempo y usar el valor actual
+// sobre cuotas de hace meses infla la deuda (se acopla cargos por atraso encima).
 export const CUOTA_SOCIAL_MONTO = 15_000;
 
 // true si el Producto es la CUOTA SOCIAL (el addon de membresía mensual).
 export function esCuotaSocial(producto: string | null | undefined): boolean {
   return (producto ?? '').trim().toUpperCase().startsWith('CUOTA SOCIAL');
+}
+
+// Histórico de la cuota social: el valor cambia con el tiempo (inflación, ajustes).
+// Cada entrada tiene { desde: "yyyy-mm-dd", monto }. Para un vencimiento dado,
+// devolvemos el monto vigente en esa fecha (el último "desde" <= fecha).
+// Cuando la mutual suba la cuota, agregar una entrada al JSON — no se toca código.
+// Espejo del archivo equivalente en mockpagos/lib/cuota-social-historico.json,
+// para que bot y portal calculen los mismos montos por cuota.
+import cuotaSocialHistorico from './cuota-social-historico.json' with { type: 'json' };
+
+interface HistoricoEntry { desde: string; monto: number; }
+const CUOTA_SOCIAL_HISTORICO: ReadonlyArray<HistoricoEntry> = (cuotaSocialHistorico as HistoricoEntry[])
+  .slice()
+  .sort((a, b) => a.desde.localeCompare(b.desde));
+
+export function cuotaSocialEnFecha(vencimientoIso: string): number {
+  if (!vencimientoIso || CUOTA_SOCIAL_HISTORICO.length === 0) {
+    return CUOTA_SOCIAL_HISTORICO[CUOTA_SOCIAL_HISTORICO.length - 1]?.monto ?? CUOTA_SOCIAL_MONTO;
+  }
+  let vigente = CUOTA_SOCIAL_HISTORICO[0].monto;
+  for (const entry of CUOTA_SOCIAL_HISTORICO) {
+    if (entry.desde <= vencimientoIso) vigente = entry.monto;
+    else break;
+  }
+  return vigente;
 }
 
 /**

@@ -35,6 +35,10 @@ export interface Operacion {
 // Vista agregada del cliente (para responder consultas tipo "cuánto debo").
 // Cuando el cliente tiene varias operaciones (préstamo + cuota social + asist),
 // estas funciones suman los relevantes para una respuesta única.
+//
+// IMPORTANTE: saldoTotal y saldoEnMora YA incluyen los cargos por atraso al día
+// de hoy (calculados por el consolidador, igual que el portal de pagos). Para
+// ver solo los cargos sin el saldo base, mirar cargoPorAtrasoAcumulado.
 export interface ResumenCliente {
   cliente: Cliente;
   operaciones: Operacion[];
@@ -44,6 +48,7 @@ export interface ResumenCliente {
   cuotasImpagas: number;
   cuotasImpagasVencidas: number;
   hayPrestamoActivo: boolean;
+  cargoPorAtrasoAcumulado: number;
 }
 
 export interface DataSource {

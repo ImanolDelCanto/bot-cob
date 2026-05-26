@@ -2,7 +2,8 @@
 // Cuando se desactiva el mock (USE_MOCK_DB=false), el bot pasa a usar el endpoint real.
 
 import { esProductoPrestamo } from './products.js';
-import type { Cliente, DataSource, Operacion, ResumenCliente } from './types.js';
+import { calcularResumenConsolidado } from './consolidador.js';
+import type { Cliente, DataSource, Operacion } from './types.js';
 
 interface MockClienteRow {
   dni: string;
@@ -89,20 +90,6 @@ function rowToOperacion(row: MockOperacionRow): Operacion {
   };
 }
 
-function calcularResumen(cliente: Cliente, ops: Operacion[]): ResumenCliente {
-  const activas = ops.filter(op => op.estado === 'Activa');
-  return {
-    cliente,
-    operaciones: ops,
-    saldoTotal: activas.reduce((s, op) => s + op.saldoTotal, 0),
-    saldoEnMora: activas.reduce((s, op) => s + op.saldoEnMora, 0),
-    cuotaMensualTotal: activas.reduce((s, op) => s + op.importeCuota, 0),
-    cuotasImpagas: activas.reduce((s, op) => s + op.cuotasImpagas, 0),
-    cuotasImpagasVencidas: activas.reduce((s, op) => s + op.cuotasImpagasVencidas, 0),
-    hayPrestamoActivo: activas.some(op => op.esCredito),
-  };
-}
-
 export const mockDb: DataSource = {
   async buscarClientePorDni(dni: string) {
     const row = clientes.find(c => c.dni === dni);
@@ -117,7 +104,7 @@ export const mockDb: DataSource = {
     const clienteRow = clientes.find(c => c.dni === dni);
     if (!clienteRow) return undefined;
     const ops = operaciones.filter(op => op.dni === dni).map(rowToOperacion);
-    return calcularResumen(rowToCliente(clienteRow), ops);
+    return calcularResumenConsolidado(rowToCliente(clienteRow), ops);
   },
 
   async getPrestamosRecienLiquidados(horasAtras: number) {

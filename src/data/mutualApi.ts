@@ -4,7 +4,8 @@
 
 import { config } from '../config.js';
 import { esProductoPrestamo, importeCuotaPura } from './products.js';
-import type { Cliente, DataSource, Operacion, ResumenCliente } from './types.js';
+import { calcularResumenConsolidado } from './consolidador.js';
+import type { Cliente, DataSource, Operacion } from './types.js';
 
 // Shape crudo que devuelve el endpoint /external/listcreditos.
 interface CreditoRaw {
@@ -196,20 +197,6 @@ function rawToOperacion(row: CreditoRaw): Operacion {
   };
 }
 
-function calcularResumen(cliente: Cliente, ops: Operacion[]): ResumenCliente {
-  const activas = ops.filter(op => op.estado === 'Activa');
-  return {
-    cliente,
-    operaciones: ops,
-    saldoTotal: activas.reduce((s, op) => s + op.saldoTotal, 0),
-    saldoEnMora: activas.reduce((s, op) => s + op.saldoEnMora, 0),
-    cuotaMensualTotal: activas.reduce((s, op) => s + op.importeCuota, 0),
-    cuotasImpagas: activas.reduce((s, op) => s + op.cuotasImpagas, 0),
-    cuotasImpagasVencidas: activas.reduce((s, op) => s + op.cuotasImpagasVencidas, 0),
-    hayPrestamoActivo: activas.some(op => op.esCredito),
-  };
-}
-
 export const mutualApi: DataSource = {
   async buscarClientePorDni(dni: string) {
     const rows = await fetchCreditos(dni);
@@ -227,7 +214,10 @@ export const mutualApi: DataSource = {
     if (rows.length === 0) return undefined;
     const cliente = rawToCliente(rows[0]);
     const ops = rows.map(rawToOperacion);
-    return calcularResumen(cliente, ops);
+    // Usa el consolidador (misma lógica que el portal): sintetiza cuotas mes a
+    // mes, aplica cargos por atraso a vencidas, filtra por mesesVisibles y
+    // consolida — así el bot y el portal muestran exactamente los mismos números.
+    return calcularResumenConsolidado(cliente, ops);
   },
 
   async getPrestamosRecienLiquidados(horasAtras: number) {

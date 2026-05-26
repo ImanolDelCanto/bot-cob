@@ -1,14 +1,14 @@
 // Cálculo de cargos por atraso (punitorios) sobre cuotas vencidas.
 //
-// Fórmula validada contra el sistema de producción de la mutual:
-//   cargoFijo   = CARGO_ADMINISTRATIVO × importeCuota   (solo si diasAtraso ≥ UMBRAL_DIAS_CARGO_FIJO)
+// Fórmula validada contra la cuenta corriente del backoffice de la mutual:
+//   cargoFijo   = CARGO_ADMINISTRATIVO × importeCuota   (desde el día 1 de atraso)
 //   cargoDiario = TASA_DIARIA × importeCuota × diasAtraso
 //   cargoTotal  = min(cargoFijo + cargoDiario, TOPE_MAXIMO × importeCuota)
+// Ejemplo verificado: cuota $8.000 con 21 días → $1.640 (= 10% + 10,5%).
 //
 // Notas:
 // - El cálculo es sobre el IMPORTE DE LA CUOTA, no sobre el saldo adeudado.
 // - Si diasAtraso ≤ 0, el cargo es 0.
-// - Si diasAtraso < 30, NO aplica el cargo administrativo, solo el diario.
 // - Se aplica a CADA cuota vencida del cliente individualmente, y se suman.
 // - Cuando exista el endpoint REST /api/cargos-atraso/calcular en producción,
 //   reemplazar las funciones puras por un cliente HTTP que pegue ahí. La interfaz
@@ -21,7 +21,7 @@ export const CARGOS_CONFIG = {
   tasaDiaria: Number(process.env.CARGOS_TASA_DIARIA ?? 0.005),
   cargoAdministrativo: Number(process.env.CARGOS_CARGO_ADMINISTRATIVO ?? 0.10),
   topeMaximo: Number(process.env.CARGOS_TOPE_MAXIMO ?? 1.10),
-  umbralDiasCargoFijo: Number(process.env.CARGOS_UMBRAL_DIAS ?? 30),
+  umbralDiasCargoFijo: Number(process.env.CARGOS_UMBRAL_DIAS ?? 1),
 };
 
 export interface CargoAtrasoResultado {
