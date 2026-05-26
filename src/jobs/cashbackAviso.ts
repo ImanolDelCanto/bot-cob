@@ -2,6 +2,7 @@ import { db } from '../data/index.js';
 import { sendWhatsAppMessage } from '../whatsapp/webhook.js';
 import { config } from '../config.js';
 import { listParaAviso, marcarAvisoEnviado, type CashbackRow } from '../cashback/cashback.js';
+import { appendMessages } from '../memory/conversations.js';
 
 // Convierte una fecha ISO (yyyy-mm-dd) al formato argentino DD/MM/YYYY.
 function formatFechaCorta(iso: string): string {
@@ -75,6 +76,19 @@ export async function runCashbackAvisoJob(opts: CashbackAvisoJobOptions = {}): P
       }
 
       await sendWhatsAppMessage(cb.telefono, texto);
+
+      // Guardamos el aviso en el historial para dar contexto al LLM cuando el
+      // socio responda (mismo motivo que el welcome). Si falla el guardado el
+      // mensaje ya salió, así que no abortamos.
+      try {
+        await appendMessages(cb.telefono, [
+          { role: 'user', parts: [{ text: '[aviso automático: recordatorio de cashback 48hs antes del vencimiento]' }] },
+          { role: 'model', parts: [{ text: texto }] },
+        ]);
+      } catch (err: any) {
+        console.error(`Aviso enviado pero falló guardar historial para cashback ${cb.id}:`, err?.message ?? err);
+      }
+
       await marcarAvisoEnviado(cb.id);
       result.enviados++;
     } catch (err: any) {

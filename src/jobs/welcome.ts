@@ -2,6 +2,7 @@ import { db } from '../data/index.js';
 import { sendWhatsAppMessage } from '../whatsapp/webhook.js';
 import { supabase } from '../db/supabase.js';
 import { config } from '../config.js';
+import { appendMessages } from '../memory/conversations.js';
 
 const TEMPLATE_NAME = 'bienvenida_credito';
 
@@ -128,6 +129,20 @@ export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<Welco
 
     try {
       await sendWhatsAppMessage(cliente.telefono, texto);
+
+      // Guardamos el welcome en el historial de conversación para que, cuando
+      // el socio responda, el LLM tenga el contexto (sino el bot lo recibe
+      // "cold" y no engancha con el hook del beneficio).
+      // Convención (misma que el flujo de comprobantes): una nota 'user' interna
+      // antes del mensaje 'model' para mantener la alternancia que Gemini exige.
+      try {
+        await appendMessages(cliente.telefono, [
+          { role: 'user', parts: [{ text: '[bienvenida automática enviada por crédito recién acreditado]' }] },
+          { role: 'model', parts: [{ text: texto }] },
+        ]);
+      } catch (err: any) {
+        console.error(`Mensaje enviado pero falló guardar historial para ${op.id}:`, err?.message ?? err);
+      }
 
       const { error: insertErr } = await supabase.from('sent_messages').insert({
         telefono: cliente.telefono,
