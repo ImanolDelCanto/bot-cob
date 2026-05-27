@@ -4,7 +4,7 @@ import { config, isWhatsAppConfigured } from './config.js';
 import { chat } from './llm/agent.js';
 import { resetHistorial } from './memory/conversations.js';
 import whatsappRouter from './whatsapp/webhook.js';
-import { runWelcomeJob } from './jobs/welcome.js';
+import { runWelcomeJob, runWelcomeBulk } from './jobs/welcome.js';
 import { runCashbackAvisoJob } from './jobs/cashbackAviso.js';
 import { startScheduler } from './jobs/scheduler.js';
 import {
@@ -109,6 +109,28 @@ app.post('/admin/jobs/welcome', requireAdmin, async (req: Request, res: Response
     res.json(result);
   } catch (err) {
     internalError(res, '/admin/jobs/welcome', err);
+  }
+});
+
+// Welcome BULK: manda bienvenida a una lista explícita de DNIs. Útil para el
+// catch-up inicial (ej: cohorte del 21 al 20 que nunca recibió welcome). Idempotente
+// igual que el job normal — un crédito ya saludado se saltea.
+// Body: { dnis: string[], dryRun?: boolean, force?: boolean }
+app.post('/admin/jobs/welcome-bulk', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const dnis = req.body?.dnis;
+    if (!Array.isArray(dnis) || dnis.length === 0) {
+      return res.status(400).json({ error: 'Falta dnis: string[] (lista no vacía)' });
+    }
+    if (dnis.length > 5000) {
+      return res.status(400).json({ error: 'Demasiados DNIs (máximo 5000 por request)' });
+    }
+    const dryRun = req.body?.dryRun === true;
+    const force = req.body?.force === true;
+    const result = await runWelcomeBulk(dnis.map(String), { dryRun, force });
+    res.json(result);
+  } catch (err) {
+    internalError(res, '/admin/jobs/welcome-bulk', err);
   }
 });
 
@@ -242,6 +264,7 @@ app.listen(config.port, () => {
   console.log(`   GET  /whatsapp/webhook   (verificación de Meta)`);
   console.log(`   POST /whatsapp/webhook   (mensajes entrantes)`);
   console.log(`   POST /admin/jobs/welcome              (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/jobs/welcome-bulk         (Bearer ADMIN_TOKEN) { dnis: [] }`);
   console.log(`   POST /admin/jobs/cashback-aviso       (Bearer ADMIN_TOKEN)`);
   console.log(`   GET  /admin/cashback/pendientes       (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/cashback/:id/marcar-reintegrado    (Bearer ADMIN_TOKEN)`);

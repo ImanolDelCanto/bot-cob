@@ -44,12 +44,27 @@ export interface InscripcionResultado {
 }
 
 // Busca el préstamo elegible para cashback: un crédito activo cuya primera cuota
-// todavía no se pagó (cuotasPagadas === 0). Si hay varios, toma el de vencimiento
-// más cercano. Devuelve undefined si el cliente no tiene ninguno así.
+// 1) todavía no se pagó (cuotasPagadas === 0) y 2) todavía no venció — sino la
+// promesa de "reintegro si pagás en tiempo y forma" ya es imposible de cumplir.
+// Si hay varios candidatos, toma el de vencimiento más cercano. Devuelve undefined
+// si el cliente no tiene ninguno así.
+//
+// Nota sobre la regla del 21: cuando un crédito se vende a partir del día 21 de
+// un mes, su primera cuota se cobra el mes SIGUIENTE al siguiente (no el inmediato).
+// Ejemplo: vendido 21-abril → primera cuota 1-junio. El endpoint de la mutual ya
+// devuelve "Primer vto." con la fecha correcta — usamos op.primerVencimiento sin
+// recalcular nada.
 async function buscarCreditoElegible(dni: string) {
   const ops = await db.getOperacionesPorDni(dni);
+  const hoyIso = new Date().toISOString().slice(0, 10);
   const candidatos = ops
-    .filter(op => op.esCredito && op.estado === 'Activa' && op.cuotasPagadas === 0 && !!op.primerVencimiento)
+    .filter(op =>
+      op.esCredito &&
+      op.estado === 'Activa' &&
+      op.cuotasPagadas === 0 &&
+      !!op.primerVencimiento &&
+      op.primerVencimiento >= hoyIso
+    )
     .sort((a, b) => a.primerVencimiento.localeCompare(b.primerVencimiento));
   return candidatos[0];
 }
