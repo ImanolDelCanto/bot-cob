@@ -6,6 +6,7 @@ import { resetHistorial } from './memory/conversations.js';
 import whatsappRouter from './whatsapp/webhook.js';
 import { runWelcomeJob, runWelcomeBulk } from './jobs/welcome.js';
 import { runCashbackAvisoJob } from './jobs/cashbackAviso.js';
+import { runVencimientoAvisoJob } from './jobs/vencimientoAviso.js';
 import { startScheduler } from './jobs/scheduler.js';
 import {
   listPendientes as listComprobantesPendientes,
@@ -17,6 +18,11 @@ import {
   marcarReintegrado,
   descartar as descartarCashback,
 } from './cashback/cashback.js';
+import {
+  crearCasoLegal,
+  listCasosActivos,
+  darDeBajaCasoLegal,
+} from './casos-legales/casos-legales.js';
 
 const app = express();
 
@@ -131,6 +137,71 @@ app.post('/admin/jobs/welcome-bulk', requireAdmin, async (req: Request, res: Res
     res.json(result);
   } catch (err) {
     internalError(res, '/admin/jobs/welcome-bulk', err);
+  }
+});
+
+// Dispara el job de recordatorio de vencimiento (manda aviso N días antes de la
+// próxima cuota a vencer, para todos los socios menos los derivados a estudio legal).
+// Body opcional: { dryRun, force, diasAntes }.
+app.post('/admin/jobs/vencimiento-aviso', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const dryRun = req.body?.dryRun === true;
+    const force = req.body?.force === true;
+    const diasAntes = typeof req.body?.diasAntes === 'number' ? req.body.diasAntes : undefined;
+    const result = await runVencimientoAvisoJob({ dryRun, force, diasAntes });
+    res.json(result);
+  } catch (err) {
+    internalError(res, '/admin/jobs/vencimiento-aviso', err);
+  }
+});
+
+// === Casos legales (socios derivados a estudios jurídicos) ===
+
+// Crea un caso (deriva un socio al estudio jurídico). Body:
+//   { dni: string, estudio_nombre: string, estudio_contacto?: string, notas?: string }
+app.post('/admin/casos-legales', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const dni = String(req.body?.dni ?? '').trim();
+    const estudio_nombre = String(req.body?.estudio_nombre ?? '').trim();
+    if (!dni || !estudio_nombre) {
+      return res.status(400).json({ error: 'Faltan dni y/o estudio_nombre' });
+    }
+    const caso = await crearCasoLegal({
+      dni,
+      estudio_nombre,
+      estudio_contacto: typeof req.body?.estudio_contacto === 'string' ? req.body.estudio_contacto : undefined,
+      notas: typeof req.body?.notas === 'string' ? req.body.notas : undefined,
+    });
+    res.json(caso);
+  } catch (err) {
+    internalError(res, '/admin/casos-legales', err);
+  }
+});
+
+// Lista casos activos.
+app.get('/admin/casos-legales', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const limit = Number(req.query.limit ?? 200);
+    const casos = await listCasosActivos({ limit });
+    res.json({ casos });
+  } catch (err) {
+    internalError(res, '/admin/casos-legales', err);
+  }
+});
+
+// Da de baja un caso (el estudio cerró, el socio vuelve al bot).
+// Body opcional: { notas: string }
+app.post('/admin/casos-legales/:id/baja', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'id inválido' });
+    }
+    const notas = typeof req.body?.notas === 'string' ? req.body.notas : undefined;
+    await darDeBajaCasoLegal(id, notas);
+    res.json({ ok: true });
+  } catch (err) {
+    internalError(res, '/admin/casos-legales/:id/baja', err);
   }
 });
 
@@ -266,6 +337,10 @@ app.listen(config.port, () => {
   console.log(`   POST /admin/jobs/welcome              (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/jobs/welcome-bulk         (Bearer ADMIN_TOKEN) { dnis: [] }`);
   console.log(`   POST /admin/jobs/cashback-aviso       (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/jobs/vencimiento-aviso    (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/casos-legales             (Bearer ADMIN_TOKEN) { dni, estudio_nombre, ... }`);
+  console.log(`   GET  /admin/casos-legales             (Bearer ADMIN_TOKEN)`);
+  console.log(`   POST /admin/casos-legales/:id/baja    (Bearer ADMIN_TOKEN)`);
   console.log(`   GET  /admin/cashback/pendientes       (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/cashback/:id/marcar-reintegrado    (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/cashback/:id/descartar             (Bearer ADMIN_TOKEN)`);

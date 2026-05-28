@@ -118,4 +118,8 @@ export const mockDb: DataSource = {
         return !Number.isNaN(t) && t >= cutoff;
       });
   },
+
+  async getOperacionesActivas() {
+    return operaciones.map(rowToOperacion).filter(op => op.estado === 'Activa');
+  },
 };

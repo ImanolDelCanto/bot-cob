@@ -232,4 +232,9 @@ export const mutualApi: DataSource = {
         return !Number.isNaN(t) && t >= cutoff;
       });
   },
+
+  async getOperacionesActivas() {
+    const rows = await fetchCreditos();
+    return rows.map(rawToOperacion).filter(op => op.estado === 'Activa');
+  },
 };

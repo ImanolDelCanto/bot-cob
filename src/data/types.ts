@@ -63,4 +63,8 @@ export interface DataSource {
 
   // Operaciones de tipo PRÉSTAMO liquidadas en las últimas N horas (input para job de bienvenida).
   getPrestamosRecienLiquidados(horasAtras: number): Promise<Operacion[]>;
+
+  // Todas las operaciones con estado 'Activa' (input para jobs proactivos que
+  // tienen que recorrer todo el padrón, ej: recordatorio de vencimiento de cuota).
+  getOperacionesActivas(): Promise<Operacion[]>;
 }

@@ -52,6 +52,10 @@ export const config = {
     // Cada cuántas horas corre cada job. El horario (hourStart/hourEnd) igual los frena fuera de ventana.
     welcomeEveryHours: Number(process.env.JOBS_WELCOME_EVERY_HOURS ?? 2),
     cashbackAvisoEveryHours: Number(process.env.JOBS_CASHBACK_EVERY_HOURS ?? 6),
+    // Recordatorio de vencimiento: lo corremos cada 6h (idempotente, así un solo
+    // disparo del día efectivamente manda). Pensado para que la primera corrida
+    // del día caiga dentro de la ventana matinal.
+    vencimientoAvisoEveryHours: Number(process.env.JOBS_VENCIMIENTO_EVERY_HOURS ?? 6),
   },
   // Programa de cashback: reintegro de un % de la primera cuota del crédito
   // si el socio paga en tiempo y forma. Ver src/cashback/cashback.ts.

@@ -119,7 +119,19 @@ Si el cliente dice "ya se debitó pero no figura": el bot le explica que el banc
 ### 4.8 Servicios de la mutual
 Si el socio pregunta qué ofrece la mutual: el bot le cuenta los 5 servicios (ayudas económicas, salud, electrohogar, turismo, Comunidad Protecap) y le pasa los links. Si está en mora, le aclara que requieren estar al día. **No** los menciona espontáneamente si está en mora — suena a vender mientras se cobra.
 
-### 4.9 Casos extremos que SÍ se derivan a humano
+### 4.9 Socios en estudio jurídico
+
+Tabla `casos_legales` en Supabase. Cuando un socio está derivado a un estudio externo, el equipo de la mutual lo carga ahí (con DNI + nombre del estudio + contacto). A partir de ese momento:
+
+- **Welcome / cashback aviso / recordatorio de vencimiento** → skip automático. El bot no le manda nada proactivo.
+- **Si el socio escribe al bot** → la tool `verificar_dni` devuelve `en_estudio_legal: true` + datos del estudio. El bot le explica con respeto que su caso lo lleva el estudio y le pasa el contacto. No avanza con saldos ni acuerdos.
+
+Operativa:
+- Cargar caso: `POST /admin/casos-legales` con `{dni, estudio_nombre, estudio_contacto, notas?}`.
+- Listar activos: `GET /admin/casos-legales`.
+- Dar de baja (cuando el caso se cierra y el socio vuelve al bot): `POST /admin/casos-legales/:id/baja`.
+
+### 4.10 Casos extremos que SÍ se derivan a humano
 
 Solo en estos casos el bot deriva sin dudarlo:
 - Cliente lo pide explícitamente.
@@ -160,10 +172,11 @@ El bot **replica la lógica de mockpagos** en [src/data/consolidador.ts](src/dat
 Cada turno se guarda en la tabla `conversations` de Supabase. El bot carga los últimos 60 mensajes para mantener contexto. Cuando el welcome o el cashback aviso disparan, **también guardan** una nota interna + el mensaje del bot, así cuando el socio responde el LLM ya tiene contexto.
 
 ### 5.6 Jobs proactivos (scheduler interno)
-Mientras el server está arriba, dos jobs corren solos:
+Mientras el server está arriba, tres jobs corren solos:
 - **Welcome** cada 2hs — manda bienvenida a créditos liquidados en últimas 48hs.
-- **Cashback aviso** cada 6hs — recordatorio a quienes vencen en ≤2 días.
-- Ambos respetan ventana horaria (10-21hs ARG) y son idempotentes.
+- **Cashback aviso** cada 6hs — recordatorio del cashback a inscriptos cuya primera cuota vence en ≤2 días.
+- **Vencimiento aviso** cada 6hs — recordatorio de cuota próxima a todos los socios cuya próxima cuota vence en 2 días (excepto los que están en estudio jurídico, o que ya tienen cashback aviso para la misma fecha).
+- Todos respetan ventana horaria (10-21hs ARG) y son idempotentes.
 - Se gatean por `JOBS_SCHEDULER_ENABLED` + WhatsApp configurado.
 
 ---
@@ -180,7 +193,11 @@ Mientras el server está arriba, dos jobs corren solos:
 - `POST /reset` — borrar historial de un teléfono.
 - `POST /admin/jobs/welcome` — disparar job de welcome (créditos liquidados en últimas 48hs).
 - `POST /admin/jobs/welcome-bulk` — body `{dnis: string[]}`. Manda welcome a una lista explícita de DNIs (catch-up inicial, cohortes históricas). Idempotente.
-- `POST /admin/jobs/cashback-aviso` — disparar job de aviso.
+- `POST /admin/jobs/cashback-aviso` — disparar job de aviso de cashback.
+- `POST /admin/jobs/vencimiento-aviso` — disparar job de recordatorio de vencimiento.
+- `POST /admin/casos-legales` — body `{dni, estudio_nombre, estudio_contacto?, notas?}`. Derivar un socio al estudio (el bot deja de hablarle).
+- `GET /admin/casos-legales` — listar casos activos.
+- `POST /admin/casos-legales/:id/baja` — dar de baja un caso (el socio vuelve al bot).
 - `GET /admin/cashback/pendientes` — listar cashbacks abiertos.
 - `POST /admin/cashback/:id/marcar-reintegrado` — humano confirma reintegro.
 - `POST /admin/cashback/:id/descartar` — no pagó a tiempo.
@@ -199,6 +216,7 @@ Mientras el server está arriba, dos jobs corren solos:
 | `sent_messages` | Idempotencia: qué template/welcome se mandó a qué crédito |
 | `comprobantes` | Metadata + estado de archivos recibidos |
 | `cashback` | Ciclo de vida del programa de cashback |
+| `casos_legales` | Socios derivados a estudios jurídicos (el bot no les habla) |
 | Bucket `comprobantes` | Archivos reales (imágenes/PDFs), privado |
 
 ---
@@ -283,11 +301,9 @@ El bot promete *"el reintegro 48hs después de que pagues"*, pero la transferenc
 
 Decidir quién es esa persona, cuándo revisa, qué medio usa para transferir.
 
-### 3. Correr `sql/cashback.sql` en Supabase
-Sin la tabla `cashback`, la tool `inscribir_cashback` falla. Si ya corriste una versión vieja con columna `cuota_social_base`, renombrala a `importe_cuota`:
-```sql
-alter table cashback rename column cuota_social_base to importe_cuota;
-```
+### 3. Correr SQLs en Supabase
+- [sql/cashback.sql](sql/cashback.sql) — tabla del programa de cashback. Si ya corriste una versión vieja con columna `cuota_social_base`, renombrala: `alter table cashback rename column cuota_social_base to importe_cuota;`
+- [sql/casos_legales.sql](sql/casos_legales.sql) — tabla de socios derivados a estudios jurídicos.
 
 ### 4. Variables a setear en Railway antes de salir
 - **`ADMIN_TOKEN`** — rotar el actual (el de testing quedó expuesto). Generar con:

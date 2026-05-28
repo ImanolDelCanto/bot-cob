@@ -3,6 +3,7 @@ import { sendWhatsAppMessage } from '../whatsapp/webhook.js';
 import { config } from '../config.js';
 import { listParaAviso, marcarAvisoEnviado, type CashbackRow } from '../cashback/cashback.js';
 import { appendMessages } from '../memory/conversations.js';
+import { getCasoLegalPorDni } from '../casos-legales/casos-legales.js';
 
 // Convierte una fecha ISO (yyyy-mm-dd) al formato argentino DD/MM/YYYY.
 function formatFechaCorta(iso: string): string {
@@ -67,6 +68,15 @@ export async function runCashbackAvisoJob(opts: CashbackAvisoJobOptions = {}): P
 
   for (const cb of pendientes) {
     try {
+      // Si el socio quedó derivado a un estudio jurídico desde que se inscribió
+      // al cashback, no le mandamos el aviso — el equipo legal lo lleva aparte.
+      // Marcamos el cashback como aviso_enviado igual para no quedarnos en loop.
+      const casoLegal = await getCasoLegalPorDni(cb.dni);
+      if (casoLegal) {
+        if (!dryRun) await marcarAvisoEnviado(cb.id);
+        continue;
+      }
+
       const texto = await armarMensaje(cb);
 
       if (dryRun) {

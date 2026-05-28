@@ -3,6 +3,7 @@ import { sendWhatsAppMessage } from '../whatsapp/webhook.js';
 import { supabase } from '../db/supabase.js';
 import { config } from '../config.js';
 import { appendMessages } from '../memory/conversations.js';
+import { getCasoLegalPorDni } from '../casos-legales/casos-legales.js';
 import type { Operacion } from '../data/types.js';
 
 const TEMPLATE_NAME = 'bienvenida_credito';
@@ -58,6 +59,14 @@ async function procesarOperacion(op: Operacion, dryRun: boolean, result: Welcome
   }
   if (!cliente.telefono) {
     result.errores.push({ creditoId: op.id, error: 'Cliente sin teléfono registrado' });
+    return;
+  }
+
+  // Si el socio está derivado a un estudio jurídico, NO le mandamos welcome —
+  // el equipo legal lo está gestionando aparte.
+  const casoLegal = await getCasoLegalPorDni(op.dni);
+  if (casoLegal) {
+    result.saltados++;
     return;
   }
 

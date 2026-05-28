@@ -1,5 +1,6 @@
 import { db } from '../data/index.js';
 import { inscribir as inscribirCashback } from '../cashback/cashback.js';
+import { getCasoLegalPorDni } from '../casos-legales/casos-legales.js';
 
 // Contexto del turno que el agente inyecta a cada handler (además de los args del LLM).
 // Sirve para datos que NO vienen del modelo, como el teléfono de WhatsApp del cliente.
@@ -14,6 +15,21 @@ export const handlers: Record<string, ToolHandler> = {
     const dniLimpio = String(dni).replace(/\D/g, '');
     const cliente = await db.buscarClientePorDni(dniLimpio);
     if (!cliente) return { verificado: false };
+
+    // Si el socio está derivado a un estudio jurídico, lo marcamos. El bot
+    // tiene la regla de NO seguir el flujo normal en esos casos — explica que
+    // su caso lo gestiona el estudio y pasa el contacto.
+    const casoLegal = await getCasoLegalPorDni(dniLimpio);
+    if (casoLegal) {
+      return {
+        verificado: true,
+        nombre: cliente.nombre,
+        en_estudio_legal: true,
+        estudio_nombre: casoLegal.estudio_nombre,
+        estudio_contacto: casoLegal.estudio_contacto,
+      };
+    }
+
     return { verificado: true, nombre: cliente.nombre };
   },
 

@@ -8,6 +8,7 @@
 import { config } from '../config.js';
 import { runWelcomeJob } from './welcome.js';
 import { runCashbackAvisoJob } from './cashbackAviso.js';
+import { runVencimientoAvisoJob } from './vencimientoAviso.js';
 
 const HORA_MS = 3_600_000;
 
@@ -31,9 +32,11 @@ function programar(nombre: string, cadaHoras: number, fn: () => Promise<unknown>
 export function startScheduler(): void {
   console.log(
     `⏰ Scheduler activo: welcome cada ${config.jobs.welcomeEveryHours}h, ` +
-    `cashback-aviso cada ${config.jobs.cashbackAvisoEveryHours}h ` +
+    `cashback-aviso cada ${config.jobs.cashbackAvisoEveryHours}h, ` +
+    `vencimiento-aviso cada ${config.jobs.vencimientoAvisoEveryHours}h ` +
     `(ventana ${config.jobs.hourStart}-${config.jobs.hourEnd}hs).`
   );
   programar('welcome', config.jobs.welcomeEveryHours, () => runWelcomeJob());
   programar('cashback-aviso', config.jobs.cashbackAvisoEveryHours, () => runCashbackAvisoJob());
+  programar('vencimiento-aviso', config.jobs.vencimientoAvisoEveryHours, () => runVencimientoAvisoJob());
 }
