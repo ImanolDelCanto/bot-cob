@@ -45,6 +45,35 @@ let snapshot: CreditoRaw[] | null = null;
 let snapshotExpires = 0;
 let inflightFetch: Promise<CreditoRaw[]> | null = null;
 
+// Retenciones activas del snapshot. Mientras haya al menos una, getSnapshot()
+// devuelve el snapshot cacheado aunque el TTL haya vencido.
+//
+// Existe para los jobs: el aviso de vencimiento recorre >1000 socios en serie,
+// tarda más que los 5 min de TTL y terminaba re-bajando los ~38MB tres o cuatro
+// veces DENTRO de la misma corrida. Además de la transferencia al pedo, la mitad
+// del padrón se evaluaba contra un snapshot y la otra mitad contra otro.
+let holds = 0;
+
+/** Congela el snapshot vigente mientras dure una corrida larga (jobs). */
+export function retenerSnapshot(): void {
+  holds++;
+}
+
+/** Libera la retención. Llamar SIEMPRE en un finally. */
+export function liberarSnapshot(): void {
+  holds = Math.max(0, holds - 1);
+}
+
+// Refresco en background: devolvemos el snapshot viejo al que preguntó y
+// actualizamos por atrás. Si falla, backoff de 1 min para no martillar.
+function refrescarEnBackground(): void {
+  if (inflightFetch) return;
+  fetchSnapshot().catch(err => {
+    console.error('⚠️  Refresh en background de mutualApi falló:', err?.message ?? err);
+    snapshotExpires = Date.now() + 60_000;
+  });
+}
+
 async function fetchSnapshot(): Promise<CreditoRaw[]> {
   // Si hay un fetch en curso, todos los callers esperan al mismo (evita stampede).
   if (inflightFetch) return inflightFetch;
@@ -84,8 +113,36 @@ async function fetchSnapshot(): Promise<CreditoRaw[]> {
 }
 
 async function getSnapshot(): Promise<CreditoRaw[]> {
-  if (snapshot && Date.now() < snapshotExpires) return snapshot;
-  return fetchSnapshot();
+  const ahora = Date.now();
+
+  // 1. Fresco, o congelado por una corrida en curso → se usa tal cual.
+  if (snapshot && (holds > 0 || ahora < snapshotExpires)) return snapshot;
+
+  // 2. Vencido pero todavía razonablemente actual: devolvemos el viejo YA y
+  //    refrescamos por atrás. Sin esto, el socio que escribe justo cuando vence
+  //    el TTL espera los ~30-50s que tarda el endpoint en responder — y como el
+  //    prompt prohíbe los mensajes puente, el bot le queda mudo todo ese rato.
+  if (snapshot && ahora < snapshotExpires + config.endpoint.staleMaxMs) {
+    refrescarEnBackground();
+    return snapshot;
+  }
+
+  // 3. No hay nada, o lo que hay es demasiado viejo para servirlo: hay que esperar.
+  try {
+    return await fetchSnapshot();
+  } catch (err: any) {
+    // Si el endpoint se cayó pero tenemos datos viejos, es mucho mejor
+    // responderle al socio con un saldo de hace un rato que tirarle un error.
+    if (snapshot) {
+      console.error(
+        `⚠️  Endpoint mutual caído (${err?.message ?? err}). Sirvo snapshot vencido de hace ` +
+        `${Math.round((ahora - (snapshotExpires - config.endpoint.cacheTtlMs)) / 60_000)} min.`,
+      );
+      snapshotExpires = ahora + 60_000; // backoff: reintentamos en 1 min
+      return snapshot;
+    }
+    throw err;
+  }
 }
 
 // Pre-carga el snapshot en background. Llamar al arrancar el bot para que el primer
@@ -126,21 +183,54 @@ function capitalizar(s: string): string {
 
 // Convierte teléfonos locales argentinos al formato que necesita WhatsApp (5491155551111).
 // Ejemplos:
-//   "3413 979584"   → "5493413979584"  (Rosario, área 3413)
-//   "11 2222 3333"  → "5491122223333"  (CABA, área 11)
-//   "0341 5979584"  → "5493415979584"  (con 0 inicial)
+//   "3413 979584"        → "5493413979584"  (Rosario, área 341)
+//   "11 2222 3333"       → "5491122223333"  (CABA, área 11)
+//   "0341 5979584"       → "5493415979584"  (con 0 inicial)
+//   "011 15 2222 3333"   → "5491122223333"  (formato viejo con 15)
 //   "+54 9 11 2222 3333" → "5491122223333"
 function normalizarTelefonoAr(raw: string): string {
   if (!raw) return '';
   let digits = raw.replace(/\D/g, '');
-  // Sacamos 0 inicial si vino "0341..."
+
+  // Ya viene con código de país.
+  if (digits.startsWith('549')) return validarMovilAr(digits);
+  if (digits.startsWith('54')) return validarMovilAr('549' + digits.slice(2));
+
+  // Formato local: [0] + área + [15] + abonado.
   if (digits.startsWith('0')) digits = digits.slice(1);
-  // Sacamos 15 al principio del subscriber number es raro acá pero por las dudas
-  // Si ya viene con 549 o 54, devolvemos como está (con 549 si era solo 54)
-  if (digits.startsWith('549')) return digits;
-  if (digits.startsWith('54')) return '549' + digits.slice(2);
-  // Asumimos celular argentino sin código país: prefijamos 549
-  return '549' + digits;
+  digits = quitarPrefijo15(digits);
+  return validarMovilAr('549' + digits);
+}
+
+// El "15" del formato viejo va inmediatamente DESPUÉS del código de área
+// (0 341 15 5979584), no al principio. Un número con 15 tiene 12 dígitos en
+// vez de 10, así que la longitud desambigua: si son 12, buscamos el "15" en
+// las posiciones posibles según el largo del área (2, 3 o 4 dígitos).
+function quitarPrefijo15(local: string): string {
+  if (local.length !== 12) return local;
+  // Si arranca con 11 (CABA/GBA) el área son 2 dígitos; si no, probamos 3 y 4.
+  const posiciones = local.startsWith('11') ? [2, 3, 4] : [3, 4, 2];
+  for (const i of posiciones) {
+    if (local.slice(i, i + 2) === '15') {
+      return local.slice(0, i) + local.slice(i + 2);
+    }
+  }
+  return local;
+}
+
+// Un móvil argentino en formato WhatsApp es 549 + área + abonado = 13 dígitos.
+// Si no da, devolvemos vacío en vez de un número "con pinta de válido":
+// mandarle el saldo y la mora de un socio a un número mal normalizado es
+// filtrarle datos financieros a un tercero. Prefiero no enviar.
+function validarMovilAr(numero: string): string {
+  if (numero.length !== 13) {
+    console.warn(
+      `⚠️  Teléfono descartado: quedó en ${numero.length} dígitos y un móvil AR son 13 (549 + 10). ` +
+      `Revisar la carga del dato en la mutual.`,
+    );
+    return '';
+  }
+  return numero;
 }
 
 function isoSoloFecha(iso: string): string {

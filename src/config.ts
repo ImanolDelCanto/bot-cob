@@ -6,6 +6,21 @@ function mustGetEnv(name: string): string {
   return v;
 }
 
+// Lee una variable numérica con default. Si viene vacía, con coma decimal o con
+// cualquier cosa que no parsee, avisa fuerte y usa el default en vez de propagar
+// un NaN. Un NaN acá no explota: se filtra silenciosamente hasta convertir un
+// setInterval en un loop cerrado o apagar un tope de envíos.
+function numEnv(name: string, def: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.error(`⚠️  ${name}="${raw}" no es un número válido. Uso el default ${def}.`);
+    return def;
+  }
+  return n;
+}
+
 export const config = {
   geminiApiKey: mustGetEnv('GEMINI_API_KEY'),
   model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
@@ -50,12 +65,27 @@ export const config = {
     // Igual NO corre si WhatsApp no está configurado (no tiene sentido mandar mensajes).
     schedulerEnabled: (process.env.JOBS_SCHEDULER_ENABLED ?? 'true').toLowerCase() !== 'false',
     // Cada cuántas horas corre cada job. El horario (hourStart/hourEnd) igual los frena fuera de ventana.
-    welcomeEveryHours: Number(process.env.JOBS_WELCOME_EVERY_HOURS ?? 2),
-    cashbackAvisoEveryHours: Number(process.env.JOBS_CASHBACK_EVERY_HOURS ?? 6),
+    welcomeEveryHours: numEnv('JOBS_WELCOME_EVERY_HOURS', 2),
+    cashbackAvisoEveryHours: numEnv('JOBS_CASHBACK_EVERY_HOURS', 6),
     // Recordatorio de vencimiento: lo corremos cada 6h (idempotente, así un solo
     // disparo del día efectivamente manda). Pensado para que la primera corrida
     // del día caiga dentro de la ventana matinal.
-    vencimientoAvisoEveryHours: Number(process.env.JOBS_VENCIMIENTO_EVERY_HOURS ?? 6),
+    vencimientoAvisoEveryHours: numEnv('JOBS_VENCIMIENTO_EVERY_HOURS', 6),
+
+    // ─── Control de volumen de mensajes proactivos ───────────────────────────
+    // Meta limita cuántos socios DISTINTOS podés contactar vos primero cada 24hs
+    // (tier de mensajería: 250 → 1.000 → 10.000 → 100.000). Un número nuevo
+    // arranca en 250, y pasarse castiga la calidad del número.
+    //
+    // Tope de envíos por corrida de cada job. Lo que queda afuera NO se pierde:
+    // se loguea y se reintenta en la corrida siguiente (la idempotencia por
+    // sent_messages evita duplicar lo ya enviado).
+    // Default conservador: 60 por corrida. Con welcome cada 2hs y los otros dos
+    // cada 6hs dentro de la ventana 10-21, el peor caso queda holgadamente
+    // debajo de 250/día. Subilo recién cuando Meta te suba de tier.
+    maxEnviosPorCorrida: numEnv('JOBS_MAX_ENVIOS_POR_CORRIDA', 60),
+    // Pausa entre envíos consecutivos, para no ráfagar la API de WhatsApp.
+    delayEntreEnviosMs: numEnv('JOBS_DELAY_ENTRE_ENVIOS_MS', 1000),
   },
   // Programa de cashback: reintegro de un % de la primera cuota del crédito
   // si el socio paga en tiempo y forma. Ver src/cashback/cashback.ts.
@@ -73,10 +103,15 @@ export const config = {
     baseUrl: process.env.ENDPOINT_BASE_URL ?? '',
     ticket: process.env.ENDPOINT_TICKET ?? '',
     empresaId: Number(process.env.ENDPOINT_EMPRESA_ID ?? 0),
-    timeoutMs: Number(process.env.ENDPOINT_TIMEOUT_MS ?? 30_000),
+    timeoutMs: numEnv('ENDPOINT_TIMEOUT_MS', 30_000),
     // TTL del cache en memoria del snapshot completo. Default 5 min.
     // Subirlo si los datos cambian poco; bajarlo si necesitás info más fresca.
-    cacheTtlMs: Number(process.env.ENDPOINT_CACHE_TTL_MS ?? 300_000),
+    cacheTtlMs: numEnv('ENDPOINT_CACHE_TTL_MS', 300_000),
+    // Cuánto tiempo MÁS allá del TTL seguimos sirviendo el snapshot viejo
+    // mientras se refresca en background. El endpoint tarda ~30-50s en
+    // responder: sin esto, el socio que escribe justo cuando vence el TTL
+    // espera todo eso para recibir su saldo. Default 30 min.
+    staleMaxMs: numEnv('ENDPOINT_STALE_MAX_MS', 1_800_000),
   },
 };
 

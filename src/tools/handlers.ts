@@ -47,9 +47,14 @@ export const handlers: Record<string, ToolHandler> = {
     const proximasFechas = opsActivas
       .map(op => {
         if (!op.primerVencimiento) return null;
-        const fecha = new Date(op.primerVencimiento);
+        const [y, m, d] = op.primerVencimiento.split('-').map(Number);
+        if (!y || !m || !d) return null;
+        // Suma de meses con clamp al último día del mes destino. `setMonth` sin
+        // clamp desborda (31 de enero + 1 mes → 3 de marzo) y le informaba al
+        // socio una fecha de vencimiento que no existe en su plan.
+        const ultimoDia = new Date(Date.UTC(y, m - 1 + op.cuotasPagadas + 1, 0)).getUTCDate();
+        const fecha = new Date(Date.UTC(y, m - 1 + op.cuotasPagadas, Math.min(d, ultimoDia)));
         if (Number.isNaN(fecha.getTime())) return null;
-        fecha.setMonth(fecha.getMonth() + op.cuotasPagadas);
         return fecha;
       })
       .filter((d): d is Date => d !== null);
@@ -85,6 +90,19 @@ export const handlers: Record<string, ToolHandler> = {
       ? Math.max(...porcentajesCredito)
       : null;
 
+    // "¿Cuántas cuotas me quedan?" es de las preguntas más frecuentes y hasta
+    // ahora el bot no la podía contestar: el dato existe en la operación pero
+    // no llegaba en el resumen, así que el modelo derivaba al portal.
+    // Solo lo exponemos si hay UN préstamo activo; con varios, el número
+    // agregado no significa nada y es mejor que el bot no invente.
+    const cuotasCredito = creditosActivos.length === 1 && creditosActivos[0].totalCuotas > 0
+      ? {
+          total_cuotas: creditosActivos[0].totalCuotas,
+          cuotas_pagadas: creditosActivos[0].cuotasPagadas,
+          cuotas_restantes: Math.max(0, creditosActivos[0].totalCuotas - creditosActivos[0].cuotasPagadas),
+        }
+      : null;
+
     return {
       encontrado: true,
       cliente: { nombre: resumen.cliente.nombre },
@@ -109,6 +127,10 @@ export const handlers: Record<string, ToolHandler> = {
         cuota_mensual_pura: resumen.cuotaMensualTotal,
         estado: tieneMora ? 'en_mora' : 'al_dia',
         hay_prestamo_activo: resumen.hayPrestamoActivo,
+        // Cuotas del préstamo. null si el socio tiene más de un préstamo activo
+        // (ahí no hay un número único que tenga sentido) o si no tiene ninguno.
+        // Usalo cuando pregunten "cuántas cuotas me quedan" / "cuánto me falta".
+        cuotas_credito: cuotasCredito,
         // SI estado === 'en_mora' usá ESTE bloque. NO menciones "próxima cuota" ni "cuándo vence".
         // saldo_vencido_con_cargos es el monto que tiene que pagar HOY para regularizar.
         mora: tieneMora ? {

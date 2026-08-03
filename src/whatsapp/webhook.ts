@@ -6,6 +6,7 @@ import { appendMessages } from '../memory/conversations.js';
 import { downloadMediaFromMeta } from './media.js';
 import { saveComprobante } from '../storage/comprobantes.js';
 import { enqueueMessage, dropBuffer } from './messageBuffer.js';
+import { WhatsAppApiError } from './errores.js';
 
 // Verifica el header X-Hub-Signature-256 que Meta envía con cada webhook.
 // El valor es "sha256=<hex>" donde el HMAC se computa sobre el body crudo
@@ -303,7 +304,9 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`WhatsApp API ${res.status}: ${body}`);
+    // Error tipado: los jobs necesitan distinguir "le falla a este socio" de
+    // "le va a fallar a todos" para no hacer 1000 llamadas inútiles seguidas.
+    throw new WhatsAppApiError(res.status, body);
   }
 }
 

@@ -14,10 +14,12 @@
 //   - Agrupa por DNI: si el socio tiene préstamo + cuota social + asistencia que
 //     vencen el mismo día, recibe UN solo mensaje con el monto total.
 
-import { db } from '../data/index.js';
+import { db, retenerDatos, liberarDatos } from '../data/index.js';
 import { sendWhatsAppMessage } from '../whatsapp/webhook.js';
 import { supabase } from '../db/supabase.js';
 import { config } from '../config.js';
+import { crearLimiter, logCupoAgotado, type Limiter } from './rateLimit.js';
+import { enviarConIdempotencia, AbortarCorrida } from './envio.js';
 import { appendMessages } from '../memory/conversations.js';
 import { getCasoLegalPorDni } from '../casos-legales/casos-legales.js';
 import { esCuotaSocial, cuotaSocialEnFecha } from '../data/products.js';
@@ -40,11 +42,15 @@ function getHoraArgentina(): number {
   return parseInt(horaStr, 10);
 }
 
-// Suma N meses a una fecha ISO yyyy-mm-dd manteniendo el día del mes.
+// Suma N meses manteniendo el día del mes, CLAMPEANDO al último día del mes
+// destino. Misma lógica que consolidador.ts (ver la explicación ahí).
+// Sin el clamp, a los socios con vencimiento 29/30/31 la fecha calculada nunca
+// coincidía con hoy+2 y el aviso no les salía nunca, o salía el día equivocado.
 function sumarMeses(isoFecha: string, meses: number): string {
   if (!isoFecha) return '';
   const [y, m, d] = isoFecha.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1 + meses, d));
+  const ultimoDia = new Date(Date.UTC(y, m - 1 + meses + 1, 0)).getUTCDate();
+  const dt = new Date(Date.UTC(y, m - 1 + meses, Math.min(d, ultimoDia)));
   return dt.toISOString().slice(0, 10);
 }
 
@@ -59,9 +65,14 @@ export interface VencimientoAvisoJobResult {
   total: number;
   enviados: number;
   saltados: number;
+  // Candidatos válidos que quedaron fuera del cupo de la corrida. No se pierden:
+  // la corrida siguiente los retoma (idempotencia por sent_messages).
+  omitidosPorCupo: number;
   errores: Array<{ dni: string; error: string }>;
   dryRun: boolean;
   skipped?: string;
+  // Corrida cortada por un error que afecta a toda la cuenta de WhatsApp.
+  abortado?: string;
 }
 
 export interface VencimientoAvisoJobOptions {
@@ -94,6 +105,7 @@ export async function runVencimientoAvisoJob(
         total: 0,
         enviados: 0,
         saltados: 0,
+        omitidosPorCupo: 0,
         errores: [],
         dryRun,
         skipped: `Fuera de horario (${hora}hs Argentina, ventana ${hourStart}-${hourEnd})`,
@@ -104,6 +116,23 @@ export async function runVencimientoAvisoJob(
   const fechaTarget = hoyMasNDiasIso(diasAntes);
   const hoyIso = hoyMasNDiasIso(0);
 
+  // Este job recorre TODO el padrón activo (>50k operaciones) y después manda de
+  // a uno esperando la API de WhatsApp. Sin congelar el snapshot, el TTL de 5min
+  // vence a mitad de corrida y se re-bajan los ~38MB varias veces seguidas.
+  retenerDatos();
+  try {
+    return await correr(fechaTarget, hoyIso, diasAntes, dryRun);
+  } finally {
+    liberarDatos();
+  }
+}
+
+async function correr(
+  fechaTarget: string,
+  hoyIso: string,
+  diasAntes: number,
+  dryRun: boolean,
+): Promise<VencimientoAvisoJobResult> {
   // 1. Traemos todas las operaciones activas y filtramos las que tienen una cuota
   //    que vence exactamente en la fecha target.
   const operacionesActivas = await db.getOperacionesActivas();
@@ -136,23 +165,31 @@ export async function runVencimientoAvisoJob(
     total: candidatosPorDni.size,
     enviados: 0,
     saltados: 0,
+    omitidosPorCupo: 0,
     errores: [],
     dryRun,
   };
+  const limiter = crearLimiter();
 
   console.log(
     `[vencimiento-aviso] ${candidatosPorDni.size} candidatos con cuota que vence el ${fechaTarget} ` +
-    `(hoy=${hoyIso}, diasAntes=${diasAntes})`,
+    `(hoy=${hoyIso}, diasAntes=${diasAntes}, cupo=${limiter.max})`,
   );
 
   for (const cand of candidatosPorDni.values()) {
     try {
-      await procesarCandidato(cand, dryRun, result);
+      await procesarCandidato(cand, dryRun, result, limiter);
     } catch (err: any) {
+      if (err instanceof AbortarCorrida) {
+        result.abortado = err.message;
+        console.error(`🛑 [vencimiento-aviso] ${err.message}`);
+        break;
+      }
       result.errores.push({ dni: cand.dni, error: String(err?.message ?? err) });
     }
   }
 
+  logCupoAgotado('vencimiento-aviso', result.omitidosPorCupo, limiter);
   return result;
 }
 
@@ -167,6 +204,7 @@ async function procesarCandidato(
   cand: CandidatoAviso,
   dryRun: boolean,
   result: VencimientoAvisoJobResult,
+  limiter: Limiter,
 ): Promise<void> {
   // 1. Skip si está en estudio legal.
   const casoLegal = await getCasoLegalPorDni(cand.dni);
@@ -195,7 +233,8 @@ async function procesarCandidato(
     return;
   }
 
-  // 3. Idempotencia: ya mandamos este aviso para este DNI+fecha?
+  // 3. Idempotencia: ya mandamos este aviso para este DNI+fecha? (chequeo barato;
+  //    la reserva autoritativa la hace enviarConIdempotencia más abajo).
   const externalId = `${cand.dni}-${cand.fechaVencimiento}`;
   const { data: yaEnviado, error: queryErr } = await supabase
     .from('sent_messages')
@@ -239,9 +278,32 @@ async function procesarCandidato(
     return;
   }
 
-  await sendWhatsAppMessage(cliente.telefono, texto);
+  // Cupo: se chequea recién acá, con todos los filtros ya pasados, así no se
+  // gasta en candidatos que igual no iban a recibir nada.
+  if (!limiter.hayCupo()) {
+    result.omitidosPorCupo++;
+    return;
+  }
+  await limiter.consumir();
 
-  // 6. Guardar en historial para que el LLM tenga contexto si el socio responde.
+  // 6. Reservar la marca, mandar, y liberarla solo si el fallo es reintentable.
+  const { resultado, error } = await enviarConIdempotencia({
+    telefono: cliente.telefono,
+    texto,
+    templateName: TEMPLATE_NAME,
+    externalId,
+  });
+
+  if (resultado === 'duplicado') {
+    result.saltados++;
+    return;
+  }
+  if (resultado !== 'enviado') {
+    result.errores.push({ dni: cand.dni, error: error ?? 'error desconocido' });
+    return;
+  }
+
+  // 7. Guardar en historial para que el LLM tenga contexto si el socio responde.
   try {
     await appendMessages(cliente.telefono, [
       { role: 'user', parts: [{ text: '[aviso automático: recordatorio de cuota próxima a vencer]' }] },
@@ -249,16 +311,6 @@ async function procesarCandidato(
     ]);
   } catch (err: any) {
     console.error(`Aviso enviado pero falló guardar historial para ${cand.dni}:`, err?.message ?? err);
-  }
-
-  // 7. Registrar idempotencia.
-  const { error: insertErr } = await supabase.from('sent_messages').insert({
-    telefono: cliente.telefono,
-    template_name: TEMPLATE_NAME,
-    external_id: externalId,
-  });
-  if (insertErr) {
-    console.error(`Aviso enviado pero falló registrar idempotencia para ${cand.dni}:`, insertErr.message);
   }
 
   result.enviados++;

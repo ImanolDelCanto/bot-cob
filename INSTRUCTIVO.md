@@ -178,6 +178,26 @@ Mientras el server está arriba, tres jobs corren solos:
 - **Vencimiento aviso** cada 6hs — recordatorio de cuota próxima a todos los socios cuya próxima cuota vence en 2 días (excepto los que están en estudio jurídico, o que ya tienen cashback aviso para la misma fecha).
 - Todos respetan ventana horaria (10-21hs ARG) y son idempotentes.
 - Se gatean por `JOBS_SCHEDULER_ENABLED` + WhatsApp configurado.
+- **Tope de envíos por corrida** (`JOBS_MAX_ENVIOS_POR_CORRIDA`, default 60) más una
+  pausa entre envíos (`JOBS_DELAY_ENTRE_ENVIOS_MS`, default 1s). Ver [src/jobs/rateLimit.ts](src/jobs/rateLimit.ts).
+  Lo que queda fuera del cupo se loguea con `⚠️ cupo por corrida agotado` y se
+  retoma en la corrida siguiente — nunca se descarta en silencio.
+- Mientras dura una corrida el snapshot del endpoint queda **congelado**
+  (`retenerDatos()` / `liberarDatos()`), así no se re-descargan los ~38MB a mitad
+  de camino cuando vence el TTL de 5 min.
+
+### 5.7 Límites de mensajería de Meta (importante antes de escalar)
+
+Meta limita cuántos socios **distintos** podés contactar por iniciativa propia cada
+24hs: tier 250 → 1.000 → 10.000 → 100.000 → ilimitado. Un número recién habilitado
+arranca en **250**. Se sube solo con volumen sostenido + buena calidad (verde), y
+pasarse o acumular bloqueos/reportes baja el tier o restringe el número.
+
+Dimensión real medida el 3/8/2026: una sola corrida de vencimiento-aviso encontró
+**1368 candidatos**. Con tier 250 no entran — hay que definir una política de
+priorización (¿por monto? ¿solo al día? ¿escalonado en varios días?). El tope por
+corrida evita quemar el número, pero la política de a quién avisar es decisión de
+producto, no de código.
 
 ---
 
@@ -261,6 +281,8 @@ JOBS_HOUR_END=21
 JOBS_SCHEDULER_ENABLED=true          # apagarlo si no querés que el scheduler corra solo
 JOBS_WELCOME_EVERY_HOURS=2
 JOBS_CASHBACK_EVERY_HOURS=6
+JOBS_MAX_ENVIOS_POR_CORRIDA=60       # ← tope por corrida (ver "Límites de Meta")
+JOBS_DELAY_ENTRE_ENVIOS_MS=1000      # pausa entre envíos consecutivos
 
 USE_MOCK_DB=false                    # true para testing local con datos mock
 ENDPOINT_BASE_URL=
@@ -268,6 +290,7 @@ ENDPOINT_TICKET=
 ENDPOINT_EMPRESA_ID=
 ENDPOINT_TIMEOUT_MS=30000
 ENDPOINT_CACHE_TTL_MS=300000
+ENDPOINT_STALE_MAX_MS=1800000        # cuánto se sirve el snapshot viejo mientras refresca atrás
 
 CASHBACK_PORCENTAJE=0.1
 CASHBACK_AVISO_DIAS_ANTES=2

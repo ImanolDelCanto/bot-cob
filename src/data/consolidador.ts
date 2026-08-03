@@ -34,10 +34,18 @@ interface CuotaSintetica {
   esCreditoOp: boolean;
 }
 
+// Suma N meses manteniendo el día, CLAMPEANDO al último día del mes destino.
+//
+// Sin el clamp, Date.UTC(2026, 0 + 1, 31) desborda a 2026-03-03: para un socio
+// con primer vencimiento el 29, 30 o 31, febrero se saltea y marzo recibe dos
+// cuotas. Eso corrompe el estado de las cuotas, el saldo y la intersección de
+// mesesVisibles. Verificado: '2026-01-31' + 1 daba '2026-03-03'.
 function sumarMeses(iso: string, n: number): string {
   if (!iso) return '';
   const [y, m, d] = iso.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1 + n, d));
+  // Día 0 del mes siguiente = último día del mes destino.
+  const ultimoDia = new Date(Date.UTC(y, m - 1 + n + 1, 0)).getUTCDate();
+  const dt = new Date(Date.UTC(y, m - 1 + n, Math.min(d, ultimoDia)));
   return dt.toISOString().slice(0, 10);
 }
 

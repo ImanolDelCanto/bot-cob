@@ -50,9 +50,15 @@ const operaciones: MockOperacionRow[] = [
   },
 
   // María González - préstamo recién liquidado (test welcome)
+  //
+  // OJO: la fecha es FIJA a propósito. Antes se calculaba con `new Date()`, o sea
+  // que este crédito y el CR-004 quedaban "liquidados hoy" TODOS los días: con el
+  // scheduler prendido en modo mock, el job de welcome intentaba mandarle una
+  // bienvenida a estos dos teléfonos inventados cada 2 horas, para siempre.
+  // Para probar el welcome, corré el job con `force` y movele la fecha a mano.
   {
     id: 'CR-002', dni: '28987654', producto: 'TARJETA DE DEBITO', plan: 'TARJETA Abril 26',
-    estado: 'Activa', fechaLiquidacion: new Date().toISOString().slice(0, 10), // hoy
+    estado: 'Activa', fechaLiquidacion: '2026-04-10',
     primerVencimiento: '2026-05-15',
     totalCuotas: 18, cuotasPagadas: 0, cuotasImpagas: 18, cuotasImpagasVencidas: 0,
     importeCuota: 50000, capitalOriginal: 800000, saldoTotal: 800000, saldoEnMora: 0,
@@ -71,7 +77,7 @@ const operaciones: MockOperacionRow[] = [
   // Lucía Fernández - préstamo recién liquidado
   {
     id: 'CR-004', dni: '40555666', producto: 'TARJETA DE DEBITO', plan: 'TARJETA Abril 26',
-    estado: 'Activa', fechaLiquidacion: new Date().toISOString().slice(0, 10),
+    estado: 'Activa', fechaLiquidacion: '2026-04-15',
     primerVencimiento: '2026-05-20',
     totalCuotas: 9, cuotasPagadas: 0, cuotasImpagas: 9, cuotasImpagasVencidas: 0,
     importeCuota: 32000, capitalOriginal: 250000, saldoTotal: 250000, saldoEnMora: 0,
