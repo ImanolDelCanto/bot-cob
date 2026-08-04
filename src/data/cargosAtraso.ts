@@ -15,14 +15,14 @@
 //   y los nombres de campos están alineados con la spec de ese endpoint.
 
 import type { Operacion } from './types.js';
+import { config } from '../config.js';
 
-// Configurable vía env vars. Defaults = valores de producción de la mutual.
-export const CARGOS_CONFIG = {
-  tasaDiaria: Number(process.env.CARGOS_TASA_DIARIA ?? 0.005),
-  cargoAdministrativo: Number(process.env.CARGOS_CARGO_ADMINISTRATIVO ?? 0.10),
-  topeMaximo: Number(process.env.CARGOS_TOPE_MAXIMO ?? 1.10),
-  umbralDiasCargoFijo: Number(process.env.CARGOS_UMBRAL_DIAS ?? 1),
-};
+// Configurable vía env vars (CARGOS_*). Defaults = valores de producción de la
+// mutual. La lectura vive en config.ts: acá se leía process.env en el top-level
+// del módulo, así que si este archivo se importaba antes que config.ts, dotenv
+// todavía no había corrido y los valores del .env se ignoraban en silencio.
+// config.ts además valida rangos y falla el arranque si algo no cierra.
+export const CARGOS_CONFIG = config.cargos;
 
 export interface CargoAtrasoResultado {
   importeCuota: number;

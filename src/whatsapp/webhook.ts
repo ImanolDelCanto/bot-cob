@@ -7,6 +7,7 @@ import { downloadMediaFromMeta } from './media.js';
 import { saveComprobante } from '../storage/comprobantes.js';
 import { enqueueMessage, dropBuffer } from './messageBuffer.js';
 import { WhatsAppApiError } from './errores.js';
+import { aplicarEstadoEntrega } from '../jobs/envio.js';
 
 // Verifica el header X-Hub-Signature-256 que Meta envía con cada webhook.
 // El valor es "sha256=<hex>" donde el HMAC se computa sobre el body crudo
@@ -32,8 +33,11 @@ function verifyMetaSignature(rawBody: Buffer | undefined, sigHeader: string | un
 // si Meta hace miles de POSTs sin App Secret configurado.
 let warnedAboutMissingAppSecret = false;
 
-const HUMANO = '+54 9 11 2621-4000';
-const HORARIO = 'Lun a Vie de 9 a 17hs';
+// Contacto humano para los mensajes fijos (los que salen sin pasar por el LLM).
+// Sale de config (CONTACTO_COBRANZA_TELEFONO / CONTACTO_HORARIO) para que haya
+// una sola fuente de verdad con el prompt y con obtener_medios_de_pago.
+const HUMANO = config.contacto.cobranza;
+const HORARIO = config.contacto.horarioHumano;
 
 // Detecta si el mensaje del cliente es un cierre puro: "gracias" / variantes
 // o solo emojis. En esos casos respondemos 👍 sin consultar al LLM para no
@@ -58,6 +62,31 @@ export function isTerminalCloser(text: string): boolean {
   // Solo símbolos + al menos un emoji = cierre. Un "??" solo NO cierra (cliente confundido).
   if (NO_LETTERS_REGEX.test(trimmed) && HAS_EMOJI_REGEX.test(trimmed)) return true;
   return false;
+}
+
+// Traduce los eventos de estado de Meta a nuestros estados de `sent_messages`.
+// Meta manda: sent → delivered → read, o failed. Nos interesan los dos últimos:
+// 'delivered' confirma que llegó al teléfono, 'failed' dice que NO llegó (y por
+// qué). 'sent' lo ignoramos porque ya lo registramos al mandar.
+async function procesarStatuses(statuses: any[]): Promise<void> {
+  for (const s of statuses) {
+    const wamid: string | undefined = s?.id;
+    if (!wamid) continue;
+
+    if (s.status === 'failed') {
+      const err = Array.isArray(s.errors) ? s.errors[0] : undefined;
+      const codigo = typeof err?.code === 'number' ? err.code : undefined;
+      const detalle = [err?.title, err?.message, err?.error_data?.details]
+        .filter(Boolean)
+        .join(' — ') || 'sin detalle';
+      console.warn(`📵 Entrega fallida (wamid=${wamid}, código=${codigo ?? '?'}): ${detalle}`);
+      await aplicarEstadoEntrega(wamid, 'fallido', codigo, detalle);
+    } else if (s.status === 'delivered') {
+      await aplicarEstadoEntrega(wamid, 'entregado');
+    } else if (s.status === 'read') {
+      await aplicarEstadoEntrega(wamid, 'leido');
+    }
+  }
 }
 
 // Mensajes para casos donde NO podemos procesar el archivo (audios u otros tipos).
@@ -129,12 +158,27 @@ router.post('/webhook', async (req: Request, res: Response) => {
       console.warn('❌ Webhook con firma inválida — rechazado');
       return res.sendStatus(401);
     }
-  } else if (!warnedAboutMissingAppSecret) {
-    console.warn(
-      '⚠️  Webhook recibido SIN verificación de firma (WHATSAPP_APP_SECRET vacío). ' +
-      'Inseguro para producción — cualquiera con la URL pública puede fabricar mensajes.'
-    );
-    warnedAboutMissingAppSecret = true;
+  } else if (config.whatsapp.permitirSinFirma) {
+    // Escotilla explícita para debug local (ALLOW_UNSIGNED_WEBHOOK=true).
+    // config.ts la rechaza si USE_MOCK_DB=false, así que no puede quedar prendida
+    // en producción por olvido.
+    if (!warnedAboutMissingAppSecret) {
+      console.warn('⚠️  Procesando webhooks SIN verificar firma (ALLOW_UNSIGNED_WEBHOOK=true). Solo para debug local.');
+      warnedAboutMissingAppSecret = true;
+    }
+  } else {
+    // Fail-closed. Antes esto era un warning que se logueaba UNA vez por proceso
+    // y después seguía procesando: cualquiera que conociera la URL podía escribir
+    // en el historial de conversación de cualquier teléfono (inyección persistente
+    // en el contexto del LLM) y quemar Gemini a una llamada por request.
+    if (!warnedAboutMissingAppSecret) {
+      console.error(
+        '❌ Webhook rechazado: WHATSAPP_APP_SECRET no está configurado y no se puede verificar la firma de Meta. ' +
+        'Seteá WHATSAPP_APP_SECRET (Meta Business → tu app → Configuración → Básica → App Secret).'
+      );
+      warnedAboutMissingAppSecret = true;
+    }
+    return res.sendStatus(401);
   }
 
   res.sendStatus(200);
@@ -148,9 +192,16 @@ router.post('/webhook', async (req: Request, res: Response) => {
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
-    const message = value?.messages?.[0];
 
-    // Si no hay mensaje (puede ser un evento de status: delivered/read/etc.) lo ignoramos
+    // Eventos de estado de entrega. Antes se descartaban con un comentario que
+    // decía "lo ignoramos" — y ahí es justamente donde Meta reporta la mayoría
+    // de los fallos de entrega: un mensaje puede ser aceptado por la API (200 en
+    // el POST) y fallar después porque el número no existe o bloqueó al negocio.
+    if (Array.isArray(value?.statuses) && value.statuses.length > 0) {
+      await procesarStatuses(value.statuses);
+    }
+
+    const message = value?.messages?.[0];
     if (!message) return;
 
     const from: string = message.from;
@@ -282,12 +333,25 @@ export function sanitizeForWhatsApp(text: string): string {
   return out;
 }
 
-export async function sendWhatsAppMessage(to: string, text: string): Promise<void> {
+/**
+ * Manda un mensaje de texto y devuelve el wamid que asigna Meta.
+ *
+ * El wamid es la única forma de correlacionar después los eventos de estado
+ * (`value.statuses[]`: delivered / read / failed) con el envío que los originó.
+ * Sin guardarlo, `sent_messages` no puede distinguir "llegó" de "el número no
+ * existe", y un socio con el teléfono mal cargado deja de recibir recordatorios
+ * para siempre sin que nadie se entere.
+ */
+export async function sendWhatsAppMessage(to: string, text: string): Promise<string | null> {
   const { phoneNumberId, accessToken, apiVersion } = config.whatsapp;
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
   const destinatario = normalizeArgentineMobile(to);
   const cuerpo = sanitizeForWhatsApp(text);
 
+  // Sin timeout, undici corta recién a los ~300s. Mientras tanto la corrida del
+  // job queda parada con el snapshot congelado, y en el camino del webhook el
+  // teléfono queda con isProcessing=true: todos sus mensajes siguientes se
+  // apilan y no se procesan nunca más hasta reiniciar.
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -300,6 +364,7 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
       type: 'text',
       text: { body: cuerpo },
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!res.ok) {
@@ -307,6 +372,14 @@ export async function sendWhatsAppMessage(to: string, text: string): Promise<voi
     // Error tipado: los jobs necesitan distinguir "le falla a este socio" de
     // "le va a fallar a todos" para no hacer 1000 llamadas inútiles seguidas.
     throw new WhatsAppApiError(res.status, body);
+  }
+
+  try {
+    const data = await res.json();
+    return data?.messages?.[0]?.id ?? null;
+  } catch {
+    // El mensaje salió; no poder leer el wamid no es motivo para fallar.
+    return null;
   }
 }
 

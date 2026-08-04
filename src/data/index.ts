@@ -6,6 +6,7 @@ import { mockDb } from './mockDb.js';
 import {
   mutualApi,
   warmUpSnapshot,
+  estadoSnapshot,
   retenerSnapshot as retenerSnapshotHttp,
   liberarSnapshot as liberarSnapshotHttp,
 } from './mutualApi.js';
@@ -24,6 +25,16 @@ export function retenerDatos(): void {
 
 export function liberarDatos(): void {
   if (!config.useMockDb) liberarSnapshotHttp();
+}
+
+// Estado de la fuente de datos, para el healthcheck. En modo mock siempre está
+// disponible; contra el endpoint real depende de que haya snapshot cargado.
+export function datosDisponibles(): { ok: boolean; detalle: string } {
+  if (config.useMockDb) return { ok: true, detalle: 'mock' };
+  const s = estadoSnapshot();
+  if (!s.cargado) return { ok: false, detalle: 'snapshot no cargado' };
+  const minutos = s.edadMs === null ? '?' : Math.round(s.edadMs / 60_000);
+  return { ok: true, detalle: `${s.registros} registros, ${minutos} min de antigüedad` };
 }
 
 // Warm-up: si estamos usando el endpoint real, pre-cargamos el snapshot en background

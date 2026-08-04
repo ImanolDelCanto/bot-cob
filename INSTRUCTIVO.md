@@ -306,6 +306,49 @@ CARGOS_UMBRAL_DIAS=1                 # 10% admin desde el día 1
 
 # 🚧 LO QUE FALTA — antes de producción
 
+---
+
+## ⛔ PRIMERO QUE NADA: correr los SQL
+
+**La rama `fix/prod-readiness` NO funciona hasta que se corran los SQL de `sql/`.**
+No es opcional ni "conviene": la autorización del DNI escribe en columnas que
+todavía no existen en la base, así que `verificar_dni` va a fallar para todos.
+
+Correr en el **SQL editor de Supabase**, en este orden:
+
+| Orden | Archivo | Qué agrega | Si no se corre |
+|---|---|---|---|
+| 1 | `sql/001_conversations.sql` | Índice `(telefono, created_at desc, id desc)` | Cada mensaje hace seq scan sobre todo el historial |
+| 2 | `sql/002_conversation_state.sql` | Columnas `dni_verificado` + `dni_verificado_at` | **`verificar_dni` falla → el bot no atiende a nadie** |
+| 3 | `sql/003_sent_messages.sql` | **Índice único `(template_name, external_id)`** + columnas de estado de entrega | **Se mandan mensajes duplicados** y `/admin/envios/fallidos` rompe |
+| 4 | `sql/004_comprobantes.sql` | CHECK de estado + índices + bucket privado | Sin impacto inmediato |
+| 5 | `sql/cashback.sql` | Tabla de cashback (ya existía) | — |
+| 6 | `sql/casos_legales.sql` | Tabla de casos legales (ya existía) | — |
+
+Todos son **idempotentes** (`create ... if not exists`, `add column if not exists`):
+se pueden correr sobre la base actual sin romper nada, y correrlos dos veces no
+hace daño.
+
+⚠️ **`003_sent_messages.sql` puede fallar** si ya hay filas duplicadas en
+`sent_messages` (el índice único no se puede crear con duplicados). El archivo
+trae arriba la consulta para detectarlos y el `delete` para limpiarlos
+conservando la fila más vieja de cada grupo. Leelo antes de correrlo.
+
+Después de correr todo, verificar con las 4 consultas de **`sql/README.md`**
+(las tres primeras tienen que devolver 6, 1 y 6 filas; la cuarta `public = false`).
+
+### Otras dos cosas del mismo paquete
+
+- **`.env` local**: agregarle `USE_MOCK_DB=true`. El default se invirtió (antes
+  era `true`, ahora es `false`) justamente para que un deploy sin la variable no
+  atienda socios reales con datos mock. Sin esa línea, el arranque local falla.
+- **`SUPABASE_SERVICE_ROLE_KEY` de `bot-cob/.env` está truncada** (le falta la
+  firma del JWT, termina en `.`). La key completa del mismo proyecto está en
+  `protecap-portal/.env`, `acuerdos/.env`, `investor/.env.local` y
+  `kpiCollection-/.env`. Con la key rota, nada que toque Supabase anda en local.
+
+---
+
 ## 🔴 Bloqueantes reales
 
 ### 1. Plantilla aprobada de WhatsApp en Meta
@@ -377,13 +420,36 @@ Probar en WhatsApp real cada flujo end-to-end:
 
 Cuando todos estos estén ✅, podemos salir:
 
-- [ ] Plantillas de WhatsApp aprobadas en Meta
-- [ ] Código actualizado para mandar templates (welcome + cashback-aviso)
-- [ ] `sql/cashback.sql` corrido en Supabase
+**Base de datos (bloquea todo lo demás)**
+- [ ] `sql/001_conversations.sql` corrido
+- [ ] `sql/002_conversation_state.sql` corrido ← sin esto el bot no atiende a nadie
+- [ ] `sql/003_sent_messages.sql` corrido ← incluye el índice único de idempotencia
+- [ ] `sql/004_comprobantes.sql` corrido
+- [ ] `sql/cashback.sql` y `sql/casos_legales.sql` corridos
+- [ ] Las 4 consultas de verificación de `sql/README.md` dan lo esperado
+
+**Meta**
+- [ ] Plantillas de WhatsApp aprobadas
+- [ ] `sendWhatsAppTemplate` + los 3 jobs migrados a plantillas
+- [ ] Código 131047 reclasificado a error de destinatario (recién cuando existan las plantillas)
+
+**Railway**
+- [ ] `ADMIN_TOKEN` rotado
+- [ ] `WHATSAPP_APP_SECRET` seteado (ahora el webhook lo exige: sin él devuelve 401)
+- [ ] `USE_MOCK_DB=false` (ya es el default, pero confirmarlo)
+- [ ] `ENDPOINT_BASE_URL`, `ENDPOINT_TICKET`, `ENDPOINT_EMPRESA_ID` seteadas
+- [ ] `CONTACTO_VENTAS_TELEFONO` con el número real del asesor
+- [ ] `PORTAL_PAGOS_URL` con el dominio definitivo (el arranque rechaza `mockpagos`)
+- [ ] `PAGO_CBU`, `PAGO_ALIAS`, `PAGO_CUIT`, `PAGO_BANCO`, `PAGO_CUENTA_CORRIENTE`
+      confirmados contra la cuenta de cobranza vigente de la mutual
+- [ ] `JOBS_MAX_ENVIOS_24H` acorde al tier de Meta (default 200, tier inicial 250)
+
+**Operativo**
 - [ ] Persona designada para revisar reintegros del cashback a diario
-- [ ] `ADMIN_TOKEN` rotado en Railway
-- [ ] `WHATSAPP_APP_SECRET` seteado en Railway
-- [ ] `USE_MOCK_DB=false` confirmado en Railway
-- [ ] Número real del asesor de ventas en el prompt
+- [ ] Definido con la mutual qué significa el campo `Saldo total` del endpoint
+
+**Validación**
 - [ ] 10 flujos de la tabla de validación probados en WhatsApp real
-- [ ] Saldo del bot coincide con el portal para 2-3 DNIs reales (incluyendo Andrea)
+- [ ] Saldo del bot coincide con el portal para 2-3 DNIs reales (incluyendo Andrea),
+      **y al menos uno con un addon de rango corto** (el caso de `mesesVisibles`)
+- [ ] Probar que un DNI ajeno YA NO devuelve datos (la autorización ahora es server-side)

@@ -43,6 +43,9 @@ interface CreditoRaw {
 // los 8 segundos, los siguientes leen del cache hasta que expire.
 let snapshot: CreditoRaw[] | null = null;
 let snapshotExpires = 0;
+// Momento real de la última carga exitosa. Separado de snapshotExpires porque
+// el backoff del catch pisa ese último y la antigüedad calculada quedaba mal.
+let snapshotAt = 0;
 let inflightFetch: Promise<CreditoRaw[]> | null = null;
 
 // Retenciones activas del snapshot. Mientras haya al menos una, getSnapshot()
@@ -105,11 +108,26 @@ async function fetchSnapshot(): Promise<CreditoRaw[]> {
 
   try {
     snapshot = await inflightFetch;
-    snapshotExpires = Date.now() + config.endpoint.cacheTtlMs;
+    snapshotAt = Date.now();
+    snapshotExpires = snapshotAt + config.endpoint.cacheTtlMs;
     return snapshot;
   } finally {
     inflightFetch = null;
   }
+}
+
+/**
+ * Estado del snapshot para el healthcheck. `edadMs` es la antigüedad REAL de los
+ * datos: se calcula contra `snapshotAt`, no contra `snapshotExpires` (que el
+ * backoff del catch pisa, y por eso el log de "sirvo snapshot vencido de hace N
+ * min" imprimía siempre ~4 min a partir del segundo fallo).
+ */
+export function estadoSnapshot(): { cargado: boolean; edadMs: number | null; registros: number } {
+  return {
+    cargado: snapshot !== null,
+    edadMs: snapshotAt > 0 ? Date.now() - snapshotAt : null,
+    registros: snapshot?.length ?? 0,
+  };
 }
 
 async function getSnapshot(): Promise<CreditoRaw[]> {
@@ -136,7 +154,7 @@ async function getSnapshot(): Promise<CreditoRaw[]> {
     if (snapshot) {
       console.error(
         `⚠️  Endpoint mutual caído (${err?.message ?? err}). Sirvo snapshot vencido de hace ` +
-        `${Math.round((ahora - (snapshotExpires - config.endpoint.cacheTtlMs)) / 60_000)} min.`,
+        `${Math.round((ahora - snapshotAt) / 60_000)} min.`,
       );
       snapshotExpires = ahora + 60_000; // backoff: reintentamos en 1 min
       return snapshot;

@@ -12,6 +12,7 @@
 import { supabase } from '../db/supabase.js';
 import { db } from '../data/index.js';
 import { config } from '../config.js';
+import { hoyIsoAr, isoMasDiasAr } from '../util/fechas.js';
 
 export type CashbackEstado = 'inscripto' | 'aviso_enviado' | 'reintegrado' | 'descartado';
 
@@ -56,7 +57,10 @@ export interface InscripcionResultado {
 // recalcular nada.
 async function buscarCreditoElegible(dni: string) {
   const ops = await db.getOperacionesPorDni(dni);
-  const hoyIso = new Date().toISOString().slice(0, 10);
+  // "Hoy" en Argentina. En UTC, entre las 21 y las 24 hora argentina ya es el día
+  // siguiente: un socio que escribía de noche el día del vencimiento recibía
+  // `sin_credito_elegible` y perdía el beneficio.
+  const hoyIso = hoyIsoAr();
   const candidatos = ops
     .filter(op =>
       op.esCredito &&
@@ -133,9 +137,8 @@ export async function inscribir(dni: string, telefono: string): Promise<Inscripc
 // Cashbacks que necesitan aviso: estado 'inscripto' y vencimiento dentro de la
 // ventana [hoy, hoy + diasAntes]. No incluye vencimientos ya pasados.
 export async function listParaAviso(diasAntes: number): Promise<CashbackRow[]> {
-  const hoy = new Date();
-  const hoyIso = hoy.toISOString().slice(0, 10);
-  const limite = new Date(hoy.getTime() + diasAntes * 86_400_000).toISOString().slice(0, 10);
+  const hoyIso = hoyIsoAr();
+  const limite = isoMasDiasAr(diasAntes);
 
   const { data, error } = await supabase
     .from('cashback')
@@ -149,11 +152,16 @@ export async function listParaAviso(diasAntes: number): Promise<CashbackRow[]> {
   return (data ?? []) as CashbackRow[];
 }
 
+// Update condicional: solo pasa de 'inscripto' a 'aviso_enviado'. Sin el filtro
+// por estado, dos corridas solapadas (scheduler + disparo manual de
+// /admin/jobs/cashback-aviso) pisaban la misma fila y la segunda re-marcaba una
+// que ya estaba avisada, borrando la fecha original del aviso.
 export async function marcarAvisoEnviado(id: number): Promise<void> {
   const { error } = await supabase
     .from('cashback')
     .update({ estado: 'aviso_enviado', fecha_aviso: new Date().toISOString() })
-    .eq('id', id);
+    .eq('id', id)
+    .eq('estado', 'inscripto');
   if (error) throw new Error(`Error marcando aviso enviado: ${error.message}`);
 }
 

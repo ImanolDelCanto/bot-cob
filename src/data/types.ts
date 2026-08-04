@@ -49,6 +49,12 @@ export interface ResumenCliente {
   cuotasImpagasVencidas: number;
   hayPrestamoActivo: boolean;
   cargoPorAtrasoAcumulado: number;
+  // Cuotas vencidas que quedaron fuera de la ventana de "meses visibles" y por
+  // lo tanto NO están sumadas en saldoEnMora. Si es > 0, saldoEnMora está corto
+  // y el bot no puede afirmar ni "al día" ni un monto de mora exacto.
+  // Ver la explicación larga en consolidador.ts (ResumenConsolidado).
+  vencidasOcultas: number;
+  saldoVencidoOculto: number;
 }
 
 export interface DataSource {

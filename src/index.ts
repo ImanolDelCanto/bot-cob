@@ -7,7 +7,11 @@ import whatsappRouter from './whatsapp/webhook.js';
 import { runWelcomeJob, runWelcomeBulk } from './jobs/welcome.js';
 import { runCashbackAvisoJob } from './jobs/cashbackAviso.js';
 import { runVencimientoAvisoJob } from './jobs/vencimientoAviso.js';
-import { startScheduler } from './jobs/scheduler.js';
+import { startScheduler, stopScheduler, jobsEnCurso } from './jobs/scheduler.js';
+import { supabase } from './db/supabase.js';
+import { datosDisponibles } from './data/index.js';
+import { flushAll, pendientes } from './whatsapp/messageBuffer.js';
+import { estaCerrando, marcarCerrando } from './util/shutdown.js';
 import {
   listPendientes as listComprobantesPendientes,
   marcarProcesado as marcarComprobanteProcesado,
@@ -45,8 +49,42 @@ function internalError(res: Response, where: string, err: unknown): void {
   res.status(500).json({ error: 'internal' });
 }
 
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ ok: true });
+// Healthcheck. Antes devolvía { ok: true } incondicionalmente: con Supabase
+// caído o el snapshot del endpoint muerto seguía dando 200, así que Railway
+// nunca se enteraba de que el bot no podía atender a nadie.
+// Durante el apagado devuelve 503 a propósito, para que el balanceador deje de
+// mandarnos tráfico antes de que cerremos.
+app.get('/health', async (_req: Request, res: Response) => {
+  if (estaCerrando()) {
+    return res.status(503).json({ ok: false, estado: 'cerrando' });
+  }
+
+  const checks: Record<string, string> = {};
+  let ok = true;
+
+  // Supabase: una consulta mínima. Si la base no responde, no hay historial ni
+  // idempotencia ni cashback — el bot está roto aunque el proceso viva.
+  try {
+    const { error } = await supabase.from('sent_messages').select('id').limit(1);
+    if (error) throw new Error(error.message);
+    checks.supabase = 'ok';
+  } catch (err: any) {
+    ok = false;
+    checks.supabase = `error: ${err?.message ?? err}`;
+  }
+
+  // Fuente de datos de la mutual: que haya un snapshot utilizable.
+  const datos = datosDisponibles();
+  if (!datos.ok) ok = false;
+  checks.datos = datos.detalle;
+
+  res.status(ok ? 200 : 503).json({
+    ok,
+    modo: config.useMockDb ? 'mock' : 'produccion',
+    checks,
+    conversacionesPendientes: pendientes(),
+    jobsEnCurso: jobsEnCurso(),
+  });
 });
 
 // Comparación constant-time del token vía hash (cualquier diff de longitud o
@@ -272,6 +310,51 @@ app.post('/admin/cashback/:id/descartar', requireAdmin, async (req: Request, res
   }
 });
 
+// Envíos proactivos que NO llegaron, con el código de error de Meta.
+// Sin esto, un socio con el teléfono mal cargado deja de recibir recordatorios
+// para siempre y nadie se entera: la fila en sent_messages figuraba igual que
+// las que sí se entregaron.
+// Query opcional: ?limit=100&horas=168 (default: últimos 7 días).
+app.get('/admin/envios/fallidos', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 100) || 100, 1), 1000);
+    const horas = Math.min(Math.max(Number(req.query.horas ?? 168) || 168, 1), 24 * 90);
+    const desde = new Date(Date.now() - horas * 3_600_000).toISOString();
+
+    const { data, error } = await supabase
+      .from('sent_messages')
+      .select('id, telefono, template_name, external_id, sent_at, estado, error_codigo, error_detalle')
+      .eq('estado', 'fallido')
+      .gte('sent_at', desde)
+      .order('sent_at', { ascending: false })
+      .limit(limit);
+
+    if (error) throw new Error(error.message);
+    res.json({ desde, total: data?.length ?? 0, fallidos: data ?? [] });
+  } catch (err) {
+    internalError(res, '/admin/envios/fallidos', err);
+  }
+});
+
+// Cuántos mensajes proactivos salieron en las últimas 24hs, contra el tope
+// configurado. Es el número que hay que mirar antes de subir de tier en Meta.
+app.get('/admin/envios/cupo', requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const desde = new Date(Date.now() - 24 * 3_600_000).toISOString();
+    const { count, error } = await supabase
+      .from('sent_messages')
+      .select('id', { count: 'exact', head: true })
+      .gte('sent_at', desde);
+    if (error) throw new Error(error.message);
+
+    const usados = count ?? 0;
+    const max = config.jobs.maxEnvios24h;
+    res.json({ ventana: '24h', usados, max, restante: Math.max(0, max - usados) });
+  } catch (err) {
+    internalError(res, '/admin/envios/cupo', err);
+  }
+});
+
 // Lista los comprobantes en estado 'pendiente' con URLs firmadas (1h) para verlos.
 // Útil para que un humano los procese desde un dashboard / cliente HTTP.
 app.get('/admin/comprobantes/pendientes', requireAdmin, async (req: Request, res: Response) => {
@@ -327,7 +410,7 @@ app.post('/admin/comprobantes/:id/marcar-rechazado', requireAdmin, async (req: R
   }
 });
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   console.log(`🤖 Bot mutual escuchando en http://localhost:${config.port}`);
   console.log(`   POST /chat               { telefono, mensaje }`);
   console.log(`   POST /reset              { telefono }`);
@@ -344,6 +427,8 @@ app.listen(config.port, () => {
   console.log(`   GET  /admin/cashback/pendientes       (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/cashback/:id/marcar-reintegrado    (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/cashback/:id/descartar             (Bearer ADMIN_TOKEN)`);
+  console.log(`   GET  /admin/envios/fallidos           (Bearer ADMIN_TOKEN) ?limit=&horas=`);
+  console.log(`   GET  /admin/envios/cupo               (Bearer ADMIN_TOKEN) cupo de 24hs vs tier de Meta`);
   console.log(`   GET  /admin/comprobantes/pendientes   (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/comprobantes/:id/marcar-procesado  (Bearer ADMIN_TOKEN)`);
   console.log(`   POST /admin/comprobantes/:id/marcar-rechazado  (Bearer ADMIN_TOKEN)`);
@@ -354,15 +439,78 @@ app.listen(config.port, () => {
     console.log(`   ⚠️  ADMIN_TOKEN no configurado: endpoints /admin/*, /chat y /reset deshabilitados`);
   }
   if (!config.whatsapp.appSecret) {
-    console.log(`   ⚠️  WHATSAPP_APP_SECRET no configurado: webhook NO está verificando firma de Meta (INSEGURO en producción)`);
+    console.log(`   ⚠️  WHATSAPP_APP_SECRET no configurado: el webhook RECHAZA todo POST (401)`);
   }
 
   // Scheduler de jobs proactivos. Solo si está habilitado Y WhatsApp configurado
   // (mandar mensajes sin credenciales no tiene sentido y solo loguearía errores).
-  if (config.jobs.schedulerEnabled && isWhatsAppConfigured()) {
+  //
+  // Guarda extra: en modo mock los jobs le mandarían mensajes REALES a los
+  // teléfonos hardcodeados de mockDb.ts usando el token de producción. Un
+  // `npm run dev` con el .env de siempre disparaba eso a los 30 segundos.
+  if (config.useMockDb && isWhatsAppConfigured()) {
+    console.log(`   ⏸️  Scheduler apagado: USE_MOCK_DB=true con WhatsApp configurado. Los jobs mandarían mensajes reales a los teléfonos del mock.`);
+  } else if (config.jobs.schedulerEnabled && isWhatsAppConfigured()) {
     startScheduler();
   } else {
     const motivo = !config.jobs.schedulerEnabled ? 'JOBS_SCHEDULER_ENABLED=false' : 'WhatsApp no configurado';
     console.log(`   ⏸️  Scheduler de jobs apagado (${motivo}). Disparalos a mano por /admin/jobs/*`);
   }
+});
+
+// ─── Apagado prolijo ────────────────────────────────────────────────────────
+//
+// Railway manda SIGTERM en cada deploy y SIGKILL unos segundos después. Sin
+// esto, cada deploy perdía los mensajes en la ventana de debounce (Meta ya
+// recibió el 200, así que no reintenta) y podía morir entre la reserva en
+// sent_messages y el envío, dejando socios marcados como avisados sin haber
+// recibido nada.
+
+const CIERRE_TIMEOUT_MS = 20_000;
+
+async function cerrar(senal: string): Promise<void> {
+  if (estaCerrando()) return;
+  marcarCerrando();
+  console.log(`\n🛑 ${senal} recibido. Cerrando...`);
+
+  // Red de seguridad: si algo se cuelga, salimos igual antes del SIGKILL.
+  const guarda = setTimeout(() => {
+    console.error(`⚠️  El cierre tardó más de ${CIERRE_TIMEOUT_MS}ms. Salgo forzado.`);
+    process.exit(1);
+  }, CIERRE_TIMEOUT_MS);
+  guarda.unref();
+
+  try {
+    // 1. Frenar los timers del scheduler. Las corridas en curso cortan solas
+    //    entre envíos porque consultan estaCerrando().
+    stopScheduler();
+    const enCurso = jobsEnCurso();
+    if (enCurso.length > 0) {
+      console.log(`   Jobs en curso al cerrar: ${enCurso.join(', ')} (cortan en el próximo envío)`);
+    }
+
+    // 2. Dejar de aceptar conexiones nuevas.
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    // 3. Procesar lo que quedó en el buffer de debounce en vez de tirarlo.
+    const p = pendientes();
+    if (p > 0) console.log(`   Vaciando ${p} conversaciones pendientes...`);
+    await flushAll(CIERRE_TIMEOUT_MS - 5_000);
+
+    console.log('✅ Cierre completo.');
+    clearTimeout(guarda);
+    process.exit(0);
+  } catch (err: any) {
+    console.error('Error durante el cierre:', err?.message ?? err);
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => void cerrar('SIGTERM'));
+process.on('SIGINT', () => void cerrar('SIGINT'));
+
+// Una promesa rechazada sin catch mata el proceso en Node 20+ — para TODOS los
+// socios, no solo para la conversación que falló. Logueamos y seguimos vivos.
+process.on('unhandledRejection', (razon) => {
+  console.error('⚠️  Promesa rechazada sin manejar:', razon);
 });

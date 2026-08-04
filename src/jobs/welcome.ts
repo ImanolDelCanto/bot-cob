@@ -5,7 +5,9 @@ import { config } from '../config.js';
 import { appendMessages } from '../memory/conversations.js';
 import { getCasoLegalPorDni } from '../casos-legales/casos-legales.js';
 import { crearLimiter, logCupoAgotado, type Limiter } from './rateLimit.js';
+import { estaCerrando } from '../util/shutdown.js';
 import { enviarConIdempotencia, AbortarCorrida } from './envio.js';
+import { horaAr } from '../util/fechas.js';
 import type { Operacion } from '../data/types.js';
 
 const TEMPLATE_NAME = 'bienvenida_credito';
@@ -20,17 +22,6 @@ function formatFechaCorta(iso: string): string {
   if (!iso) return '';
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
-}
-
-// Hora actual (0-23) en zona horaria Argentina (UTC-3).
-// Usamos Intl para que funcione bien en cualquier server, sin importar su TZ por defecto.
-function getHoraArgentina(): number {
-  const horaStr = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Argentina/Buenos_Aires',
-    hour: 'numeric',
-    hour12: false,
-  }).format(new Date());
-  return parseInt(horaStr, 10);
 }
 
 export interface WelcomeJobResult {
@@ -169,7 +160,7 @@ async function procesarOperacion(
 // ventana configurada y no se pasó force, devolvemos un result vacío con `skipped`.
 function chequearHorario(force: boolean, dryRun: boolean): WelcomeJobResult | null {
   if (force) return null;
-  const hora = getHoraArgentina();
+  const hora = horaAr();
   const { hourStart, hourEnd } = config.jobs;
   if (hora < hourStart || hora >= hourEnd) {
     return {
@@ -207,9 +198,14 @@ export async function runWelcomeJob(opts: WelcomeJobOptions = {}): Promise<Welco
       errores: [],
       dryRun,
     };
-    const limiter = crearLimiter();
+    const limiter = await crearLimiter();
 
     for (const op of operaciones) {
+      if (estaCerrando()) {
+        result.abortado = 'proceso cerrando (SIGTERM): corrida interrumpida, se retoma en la próxima';
+        console.warn(`🛑 [welcome] ${result.abortado}`);
+        break;
+      }
       try {
         await procesarOperacion(op, dryRun, result, limiter);
       } catch (err: any) {
@@ -251,7 +247,7 @@ export async function runWelcomeBulk(
     errores: [],
     dryRun,
   };
-  const limiter = crearLimiter();
+  const limiter = await crearLimiter();
 
   retenerDatos();
   try {

@@ -19,10 +19,12 @@ import { sendWhatsAppMessage } from '../whatsapp/webhook.js';
 import { supabase } from '../db/supabase.js';
 import { config } from '../config.js';
 import { crearLimiter, logCupoAgotado, type Limiter } from './rateLimit.js';
+import { estaCerrando } from '../util/shutdown.js';
 import { enviarConIdempotencia, AbortarCorrida } from './envio.js';
 import { appendMessages } from '../memory/conversations.js';
 import { getCasoLegalPorDni } from '../casos-legales/casos-legales.js';
 import { esCuotaSocial, cuotaSocialEnFecha } from '../data/products.js';
+import { horaAr, isoMasDiasAr } from '../util/fechas.js';
 import type { Operacion } from '../data/types.js';
 
 const TEMPLATE_NAME = 'recordatorio_vencimiento';
@@ -33,15 +35,6 @@ function formatFechaCorta(iso: string): string {
   return `${d}/${m}/${y}`;
 }
 
-function getHoraArgentina(): number {
-  const horaStr = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Argentina/Buenos_Aires',
-    hour: 'numeric',
-    hour12: false,
-  }).format(new Date());
-  return parseInt(horaStr, 10);
-}
-
 // Suma N meses manteniendo el día del mes, CLAMPEANDO al último día del mes
 // destino. Misma lógica que consolidador.ts (ver la explicación ahí).
 // Sin el clamp, a los socios con vencimiento 29/30/31 la fecha calculada nunca
@@ -49,15 +42,16 @@ function getHoraArgentina(): number {
 function sumarMeses(isoFecha: string, meses: number): string {
   if (!isoFecha) return '';
   const [y, m, d] = isoFecha.split('-').map(Number);
+  if (!y || !m || !d) {
+    console.error(`⚠️  sumarMeses: fecha inválida "${isoFecha}". Salteo esta operación.`);
+    return '';
+  }
   const ultimoDia = new Date(Date.UTC(y, m - 1 + meses + 1, 0)).getUTCDate();
   const dt = new Date(Date.UTC(y, m - 1 + meses, Math.min(d, ultimoDia)));
-  return dt.toISOString().slice(0, 10);
-}
-
-// hoy + N días en ISO yyyy-mm-dd, en zona horaria Argentina (para evitar drifts).
-function hoyMasNDiasIso(n: number): string {
-  const hoy = new Date();
-  const dt = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate() + n));
+  if (Number.isNaN(dt.getTime())) {
+    console.error(`⚠️  sumarMeses: resultado inválido para "${isoFecha}" + ${meses} meses.`);
+    return '';
+  }
   return dt.toISOString().slice(0, 10);
 }
 
@@ -98,7 +92,7 @@ export async function runVencimientoAvisoJob(
   const diasAntes = opts.diasAntes ?? config.cashback.avisoDiasAntes;
 
   if (!force) {
-    const hora = getHoraArgentina();
+    const hora = horaAr();
     const { hourStart, hourEnd } = config.jobs;
     if (hora < hourStart || hora >= hourEnd) {
       return {
@@ -113,8 +107,8 @@ export async function runVencimientoAvisoJob(
     }
   }
 
-  const fechaTarget = hoyMasNDiasIso(diasAntes);
-  const hoyIso = hoyMasNDiasIso(0);
+  const fechaTarget = isoMasDiasAr(diasAntes);
+  const hoyIso = isoMasDiasAr(0);
 
   // Este job recorre TODO el padrón activo (>50k operaciones) y después manda de
   // a uno esperando la API de WhatsApp. Sin congelar el snapshot, el TTL de 5min
@@ -169,7 +163,7 @@ async function correr(
     errores: [],
     dryRun,
   };
-  const limiter = crearLimiter();
+  const limiter = await crearLimiter();
 
   console.log(
     `[vencimiento-aviso] ${candidatosPorDni.size} candidatos con cuota que vence el ${fechaTarget} ` +
@@ -177,6 +171,13 @@ async function correr(
   );
 
   for (const cand of candidatosPorDni.values()) {
+    // El proceso está cerrando (deploy de Railway): cortamos prolijo. Lo que
+    // falta lo retoma la corrida siguiente — la idempotencia lo cubre.
+    if (estaCerrando()) {
+      result.abortado = 'proceso cerrando (SIGTERM): corrida interrumpida, se retoma en la próxima';
+      console.warn(`🛑 [vencimiento-aviso] ${result.abortado}`);
+      break;
+    }
     try {
       await procesarCandidato(cand, dryRun, result, limiter);
     } catch (err: any) {

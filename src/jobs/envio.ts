@@ -77,7 +77,19 @@ export async function enviarConIdempotencia(
 
   // 2. Mandar.
   try {
-    await sendWhatsAppMessage(telefono, texto);
+    const wamid = await sendWhatsAppMessage(telefono, texto);
+    // Guardamos el wamid para poder correlacionar después los eventos de estado
+    // que Meta manda por el webhook (delivered / read / failed).
+    if (wamid) {
+      const { error } = await supabase
+        .from('sent_messages')
+        .update({ wamid, actualizado_at: new Date().toISOString() })
+        .eq('template_name', templateName)
+        .eq('external_id', externalId);
+      if (error) {
+        console.error(`⚠️  No pude guardar el wamid de ${templateName}/${externalId}: ${error.message}`);
+      }
+    }
     return { resultado: 'enviado' };
   } catch (err: any) {
     const clase = claseDeError(err);
@@ -85,7 +97,10 @@ export async function enviarConIdempotencia(
     if (clase === 'destinatario') {
       // El número no puede recibir (no está en WhatsApp, formato inválido...).
       // Dejamos la marca puesta a propósito: reintentar no cambia nada y solo
-      // gasta cupo que le sirve a otro socio.
+      // gasta cupo que le sirve a otro socio. Pero la marcamos como FALLIDA,
+      // para que se pueda ver quién quedó sin recibir en vez de que figure
+      // como enviada igual que las que sí llegaron.
+      await marcarFallido(templateName, externalId, err);
       return { resultado: 'fallo_destinatario', error: String(err?.message ?? err) };
     }
 
@@ -96,6 +111,51 @@ export async function enviarConIdempotencia(
       throw new AbortarCorrida(err);
     }
     return { resultado: 'fallo_transitorio', error: String(err?.message ?? err) };
+  }
+}
+
+/**
+ * Marca una reserva como fallida, conservando el código de error de Meta.
+ * La fila queda (no se reintenta) pero visible en /admin/envios/fallidos.
+ */
+async function marcarFallido(templateName: string, externalId: string, err: any): Promise<void> {
+  const codigo = err instanceof WhatsAppApiError ? err.codigo ?? null : null;
+  const { error } = await supabase
+    .from('sent_messages')
+    .update({
+      estado: 'fallido',
+      error_codigo: codigo,
+      error_detalle: String(err?.message ?? err).slice(0, 500),
+      actualizado_at: new Date().toISOString(),
+    })
+    .eq('template_name', templateName)
+    .eq('external_id', externalId);
+  if (error) {
+    console.error(`⚠️  No pude marcar como fallido ${templateName}/${externalId}: ${error.message}`);
+  }
+}
+
+/**
+ * Aplica un evento de estado que llegó por el webhook de Meta.
+ * Meta reporta buena parte de los fallos de entrega acá, NO en la respuesta del
+ * POST de envío: un mensaje puede ser aceptado por la API y fallar después.
+ */
+export async function aplicarEstadoEntrega(
+  wamid: string,
+  estado: 'entregado' | 'leido' | 'fallido',
+  errorCodigo?: number,
+  errorDetalle?: string,
+): Promise<void> {
+  const patch: Record<string, unknown> = {
+    estado,
+    actualizado_at: new Date().toISOString(),
+  };
+  if (errorCodigo !== undefined) patch.error_codigo = errorCodigo;
+  if (errorDetalle !== undefined) patch.error_detalle = errorDetalle.slice(0, 500);
+
+  const { error } = await supabase.from('sent_messages').update(patch).eq('wamid', wamid);
+  if (error) {
+    console.error(`⚠️  No pude aplicar el estado "${estado}" al wamid ${wamid}: ${error.message}`);
   }
 }
 

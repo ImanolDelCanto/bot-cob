@@ -31,16 +31,20 @@ interface State {
   timer: NodeJS.Timeout | null;
   isProcessing: boolean;             // hay un handler() corriendo para este teléfono
   postProcessQueue: string[];        // mensajes que llegaron mientras procesábamos
+  handler: Handler | null;           // último handler visto, para poder hacer flush al cerrar
 }
 
 const states = new Map<string, State>();
+
+// Handlers en vuelo, para poder esperarlos en el apagado.
+const enVuelo = new Set<Promise<void>>();
 
 type Handler = (telefono: string, combinedText: string) => Promise<void>;
 
 function getOrCreate(telefono: string): State {
   let s = states.get(telefono);
   if (!s) {
-    s = { buffer: [], timer: null, isProcessing: false, postProcessQueue: [] };
+    s = { buffer: [], timer: null, isProcessing: false, postProcessQueue: [], handler: null };
     states.set(telefono, s);
   }
   return s;
@@ -54,11 +58,19 @@ export function enqueueMessage(telefono: string, text: string, handler: Handler)
   const debounceMs = config.messageDebounceMs;
 
   if (debounceMs <= 0) {
-    void handler(telefono, text);
+    // Sin debounce el handler queda suelto. Antes era `void handler(...)`: un
+    // throw de Gemini o de Meta se volvía unhandled rejection y en Node 20+ eso
+    // MATA el proceso — para todos los socios, no solo para este.
+    const p = handler(telefono, text).catch((err: any) => {
+      console.error(`Error procesando mensaje de ${telefono}:`, err?.message ?? err);
+    });
+    enVuelo.add(p);
+    void p.finally(() => enVuelo.delete(p));
     return;
   }
 
   const s = getOrCreate(telefono);
+  s.handler = handler;
 
   if (s.isProcessing) {
     // Ya hay un chat() corriendo para este teléfono. Acumulamos para procesar
@@ -74,7 +86,13 @@ export function enqueueMessage(telefono: string, text: string, handler: Handler)
   s.timer = setTimeout(() => fire(telefono, handler), debounceMs);
 }
 
-async function fire(telefono: string, handler: Handler): Promise<void> {
+function fire(telefono: string, handler: Handler): void {
+  const p = fireInterno(telefono, handler);
+  enVuelo.add(p);
+  void p.finally(() => enVuelo.delete(p));
+}
+
+async function fireInterno(telefono: string, handler: Handler): Promise<void> {
   const s = states.get(telefono);
   if (!s) return;
 
@@ -133,4 +151,58 @@ export function dropBuffer(telefono: string): void {
   if (!s.isProcessing) {
     states.delete(telefono);
   }
+}
+
+/**
+ * Apagado prolijo: dispara YA todos los debounces pendientes (sin esperar la
+ * ventana de silencio) y espera a que terminen los handlers en vuelo.
+ *
+ * Sin esto, cada deploy de Railway se comía los mensajes que estaban en la
+ * ventana de debounce: Meta ya recibió el 200, así que no reintenta, y el socio
+ * se queda sin respuesta sin que nadie se entere.
+ *
+ * Devuelve cuántos teléfonos tenían algo pendiente.
+ */
+export async function flushAll(timeoutMs = 15_000): Promise<number> {
+  let disparados = 0;
+
+  for (const [telefono, s] of states) {
+    if (s.timer) {
+      clearTimeout(s.timer);
+      s.timer = null;
+    }
+    // Lo que quedó en la cola post-process también se procesa en esta tanda.
+    if (s.postProcessQueue.length > 0 && !s.isProcessing) {
+      s.buffer.push(...s.postProcessQueue);
+      s.postProcessQueue = [];
+    }
+    if (s.buffer.length > 0 && !s.isProcessing && s.handler) {
+      disparados++;
+      fire(telefono, s.handler);
+    }
+  }
+
+  // Esperamos lo que esté en vuelo, con techo: es preferible perder un mensaje
+  // a que Railway nos mande SIGKILL a mitad de un envío.
+  const limite = Date.now() + timeoutMs;
+  while (enVuelo.size > 0 && Date.now() < limite) {
+    await Promise.race([
+      Promise.allSettled([...enVuelo]),
+      new Promise((r) => setTimeout(r, 250)),
+    ]);
+  }
+
+  if (enVuelo.size > 0) {
+    console.warn(`⚠️  Quedaron ${enVuelo.size} conversaciones sin terminar al cerrar (timeout de ${timeoutMs}ms).`);
+  }
+  return disparados;
+}
+
+/** Cuántas conversaciones tienen algo pendiente. Para el /health y el cierre. */
+export function pendientes(): number {
+  let n = 0;
+  for (const s of states.values()) {
+    if (s.buffer.length > 0 || s.postProcessQueue.length > 0 || s.isProcessing) n++;
+  }
+  return n;
 }

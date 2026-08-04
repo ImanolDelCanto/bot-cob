@@ -1,28 +1,20 @@
 import { db, retenerDatos, liberarDatos } from '../data/index.js';
-import { sendWhatsAppMessage } from '../whatsapp/webhook.js';
 import { config } from '../config.js';
 import { listParaAviso, marcarAvisoEnviado, type CashbackRow } from '../cashback/cashback.js';
 import { appendMessages } from '../memory/conversations.js';
 import { getCasoLegalPorDni } from '../casos-legales/casos-legales.js';
 import { crearLimiter, logCupoAgotado } from './rateLimit.js';
-import { AbortarCorrida } from './envio.js';
-import { claseDeError, WhatsAppApiError } from '../whatsapp/errores.js';
+import { estaCerrando } from '../util/shutdown.js';
+import { enviarConIdempotencia, AbortarCorrida } from './envio.js';
+import { horaAr } from '../util/fechas.js';
+
+const TEMPLATE_NAME = 'cashback_aviso_48hs';
 
 // Convierte una fecha ISO (yyyy-mm-dd) al formato argentino DD/MM/YYYY.
 function formatFechaCorta(iso: string): string {
   if (!iso) return '';
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
-}
-
-// Hora actual (0-23) en zona horaria Argentina (UTC-3).
-function getHoraArgentina(): number {
-  const horaStr = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Argentina/Buenos_Aires',
-    hour: 'numeric',
-    hour12: false,
-  }).format(new Date());
-  return parseInt(horaStr, 10);
 }
 
 export interface CashbackAvisoJobResult {
@@ -53,7 +45,7 @@ export async function runCashbackAvisoJob(opts: CashbackAvisoJobOptions = {}): P
 
   // Misma defensa horaria que el job de bienvenida.
   if (!force) {
-    const hora = getHoraArgentina();
+    const hora = horaAr();
     const { hourStart, hourEnd } = config.jobs;
     if (hora < hourStart || hora >= hourEnd) {
       return {
@@ -75,13 +67,18 @@ export async function runCashbackAvisoJob(opts: CashbackAvisoJobOptions = {}): P
     errores: [],
     dryRun,
   };
-  const limiter = crearLimiter();
+  const limiter = await crearLimiter();
 
   // armarMensaje() consulta el nombre por DNI contra el endpoint: congelamos el
   // snapshot para que no se re-descargue si la corrida pasa el TTL.
   retenerDatos();
   try {
     for (const cb of pendientes) {
+      if (estaCerrando()) {
+        result.abortado = 'proceso cerrando (SIGTERM): corrida interrumpida, se retoma en la próxima';
+        console.warn(`🛑 [cashback-aviso] ${result.abortado}`);
+        break;
+      }
       try {
         // Si el socio quedó derivado a un estudio jurídico desde que se inscribió
         // al cashback, no le mandamos el aviso — el equipo legal lo lleva aparte.
@@ -106,22 +103,33 @@ export async function runCashbackAvisoJob(opts: CashbackAvisoJobOptions = {}): P
         }
         await limiter.consumir();
 
-        try {
-          await sendWhatsAppMessage(cb.telefono, texto);
-        } catch (err: any) {
-          const clase = claseDeError(err);
-          if (clase === 'cuenta' && err instanceof WhatsAppApiError) {
-            // Le va a fallar a todos: corto la corrida en vez de repetir el
-            // mismo error una vez por inscripto.
-            throw new AbortarCorrida(err);
-          }
-          if (clase === 'destinatario') {
+        // Reserva ANTES de mandar, igual que welcome y vencimiento-aviso. Este
+        // job había quedado con el patrón viejo (mandar, y recién ~30 líneas
+        // después marcar el cashback como avisado), que es justo el que envio.ts
+        // vino a reemplazar — y encima es el único job que promete plata.
+        // Un crash, un redeploy o un fallo de marcarAvisoEnviado en el medio
+        // dejaban al socio recibiendo el aviso dos veces.
+        const { resultado, error } = await enviarConIdempotencia({
+          telefono: cb.telefono,
+          texto,
+          templateName: TEMPLATE_NAME,
+          externalId: String(cb.credito_id),
+        });
+
+        if (resultado === 'duplicado') {
+          // Otra corrida (o el disparo manual de /admin/jobs/*) ya lo mandó.
+          await marcarAvisoEnviado(cb.id);
+          continue;
+        }
+        if (resultado !== 'enviado') {
+          if (resultado === 'fallo_destinatario') {
             // El número no puede recibir. Lo marcamos como avisado para no
-            // reintentarlo eternamente, pero lo registramos como error para
-            // que se vea que ese socio NO recibió su recordatorio.
+            // reintentarlo eternamente, pero queda el error registrado para que
+            // se vea que ese socio NO recibió su recordatorio.
             await marcarAvisoEnviado(cb.id);
           }
-          throw err;
+          result.errores.push({ cashbackId: cb.id, error: error ?? 'error desconocido' });
+          continue;
         }
 
         // Guardamos el aviso en el historial para dar contexto al LLM cuando el

@@ -23,6 +23,7 @@
 
 import { calcularCargoPorCuota } from './cargosAtraso.js';
 import { esCuotaSocial, cuotaSocialEnFecha } from './products.js';
+import { hoyIsoAr, diasDeAtrasoIso } from '../util/fechas.js';
 import type { Cliente, Operacion, ResumenCliente } from './types.js';
 
 interface CuotaSintetica {
@@ -40,12 +41,25 @@ interface CuotaSintetica {
 // con primer vencimiento el 29, 30 o 31, febrero se saltea y marzo recibe dos
 // cuotas. Eso corrompe el estado de las cuotas, el saldo y la intersección de
 // mesesVisibles. Verificado: '2026-01-31' + 1 daba '2026-03-03'.
+// Una fecha mal cargada en el endpoint (formato dd/mm/yyyy, campo vacío, null)
+// hacía que `new Date(Date.UTC(NaN, ...))` produjera un Invalid Date y que
+// `.toISOString()` tirara `RangeError: Invalid time value`. En el job de
+// vencimiento ese throw estaba fuera del try/catch por candidato, así que UN
+// registro malo entre miles dejaba al padrón entero sin recordatorio ese día.
 function sumarMeses(iso: string, n: number): string {
   if (!iso) return '';
   const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) {
+    console.error(`⚠️  sumarMeses: fecha ISO inválida "${iso}" (se esperaba yyyy-mm-dd). Devuelvo vacío.`);
+    return '';
+  }
   // Día 0 del mes siguiente = último día del mes destino.
   const ultimoDia = new Date(Date.UTC(y, m - 1 + n + 1, 0)).getUTCDate();
   const dt = new Date(Date.UTC(y, m - 1 + n, Math.min(d, ultimoDia)));
+  if (Number.isNaN(dt.getTime())) {
+    console.error(`⚠️  sumarMeses: resultado inválido para "${iso}" + ${n} meses. Devuelvo vacío.`);
+    return '';
+  }
   return dt.toISOString().slice(0, 10);
 }
 
@@ -53,22 +67,14 @@ function bucketMes(iso: string): string {
   return iso.slice(0, 7);
 }
 
-function diasDeAtraso(iso: string, hoy: Date): number {
-  if (!iso) return 0;
-  const [y, m, d] = iso.split('-').map(Number);
-  if (!y || !m || !d) return 0;
-  const venc = Date.UTC(y, m - 1, d, 12, 0, 0);
-  const hoyUtc = Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate(), 12, 0, 0);
-  const ms = hoyUtc - venc;
-  return ms > 0 ? Math.floor(ms / 86_400_000) : 0;
-}
-
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
 // Sintetiza las cuotas de UNA operación, marcando estado y aplicando cargo a vencidas.
-function sintetizar(op: Operacion, hoy: Date): CuotaSintetica[] {
+// `hoyIso` es la fecha de HOY en Argentina (yyyy-mm-dd), no un Date: el atraso se
+// calcula comparando fechas puras, sin horas ni zonas de por medio.
+function sintetizar(op: Operacion, hoyIso: string): CuotaSintetica[] {
   if (op.totalCuotas <= 0 || !op.primerVencimiento) return [];
 
   const totalCuotas = op.totalCuotas;
@@ -90,6 +96,9 @@ function sintetizar(op: Operacion, hoy: Date): CuotaSintetica[] {
   const cuotas: CuotaSintetica[] = [];
   for (let i = 1; i <= totalCuotas; i++) {
     const venc = sumarMeses(op.primerVencimiento, i - 1);
+    // Fecha inválida: salteamos la cuota en vez de meter '' en los buckets de mes
+    // (bucketMes('') = '' y contaminaría mesesVisibles y los totales).
+    if (!venc) continue;
 
     let estado: CuotaSintetica['estado'];
     if (i <= cuotasPagadas) estado = 'pagada';
@@ -111,7 +120,7 @@ function sintetizar(op: Operacion, hoy: Date): CuotaSintetica[] {
 
     let cargo = 0;
     if (estado === 'vencida' && montoPuro > 0) {
-      const dias = diasDeAtraso(venc, hoy);
+      const dias = diasDeAtrasoIso(venc, hoyIso);
       cargo = calcularCargoPorCuota(montoPuro, dias).cargoTotal;
     }
 
@@ -187,6 +196,22 @@ function consolidar(cuotas: CuotaSintetica[], mesesVisibles: Set<string>): Cuota
 export interface ResumenConsolidado extends ResumenCliente {
   // Cargos por atraso acumulados al día de hoy (informativo).
   cargoPorAtrasoAcumulado: number;
+
+  // ─── Red de seguridad de mesesVisibles ────────────────────────────────────
+  //
+  // `mesesVisibles` es la intersección de meses cubiertos por TODOS los addons
+  // activos, y se usa para armar el detalle mes a mes (igual que el portal).
+  // El problema: `saldoEnMora` se calcula SOLO sobre esos meses. Si un socio
+  // tiene cuota social desde 2025 y contrató una asistencia en 2026, la
+  // intersección arranca en 2026 y todas las cuotas vencidas anteriores
+  // desaparecen del saldo en mora — hasta el caso extremo de que `saldoEnMora`
+  // dé 0 y el bot le diga "estás al día" a alguien con 15 cuotas impagas.
+  //
+  // No cambiamos el cálculo (el portal replica esta misma lógica y los números
+  // tienen que coincidir), pero SÍ exponemos que quedó plata afuera para que el
+  // bot no afirme algo falso. Ver la regla 12 bis del system prompt.
+  vencidasOcultas: number;
+  saldoVencidoOculto: number;
 }
 
 // Función principal: dadas las operaciones activas+canceladas y los datos del cliente,
@@ -196,6 +221,8 @@ export function calcularResumenConsolidado(
   operaciones: Operacion[],
   hoy: Date = new Date(),
 ): ResumenConsolidado {
+  // "Hoy" en Argentina, no en UTC. Ver src/util/fechas.ts.
+  const hoyIso = hoyIsoAr(hoy);
   const activas = operaciones.filter(op => op.estado === 'Activa');
   const addonsActivos = activas.filter(op => !op.esCredito);
 
@@ -213,7 +240,7 @@ export function calcularResumenConsolidado(
     }
   }
 
-  const cuotasPorOp = activas.flatMap(op => sintetizar(op, hoy));
+  const cuotasPorOp = activas.flatMap(op => sintetizar(op, hoyIso));
   const consolidadas = consolidar(cuotasPorOp, mesesVisibles);
 
   const visibles = consolidadas.filter(c => c.estado !== 'pagada');
@@ -226,13 +253,27 @@ export function calcularResumenConsolidado(
   // Cuotas ocultas: meses del préstamo que quedan fuera de la intersección de
   // addons. Las sumamos al saldoTotal (para cancelar todo) pero NO al saldoVisible.
   const mesesConsolidados = new Set(consolidadas.map(c => c.mes));
-  const saldoOculto = cuotasPorOp
-    .filter(c => c.estado !== 'pagada' && !mesesConsolidados.has(bucketMes(c.vencimiento)))
-    .reduce((s, c) => s + c.monto, 0);
+  const ocultas = cuotasPorOp.filter(
+    c => c.estado !== 'pagada' && !mesesConsolidados.has(bucketMes(c.vencimiento)),
+  );
+  const saldoOculto = ocultas.reduce((s, c) => s + c.monto, 0);
+
+  // De esas ocultas, las que además están VENCIDAS son las que hacen que
+  // `saldoEnMora` quede corto. Las contamos para que el bot lo sepa y no afirme
+  // "estás al día" ni cante un monto de mora incompleto como si fuera el total.
+  const ocultasVencidas = ocultas.filter(c => c.estado === 'vencida');
+  const saldoVencidoOculto = ocultasVencidas.reduce((s, c) => s + c.monto, 0);
+
+  if (ocultasVencidas.length > 0) {
+    console.warn(
+      `⚠️  [consolidador] DNI ${cliente.dni}: ${ocultasVencidas.length} cuota(s) vencida(s) fuera de ` +
+      `mesesVisibles por $${round2(saldoVencidoOculto)}. saldoEnMora informado ($${round2(saldoEnMora)}) ` +
+      `es MENOR al real. Ver "red de seguridad de mesesVisibles" en consolidador.ts.`,
+    );
+  }
 
   // Cuota mensual ACTUAL (lo que paga por mes hoy/próxima): préstamo + addons,
   // con cuota social al monto VIGENTE HOY (no histórico).
-  const hoyIso = hoy.toISOString().slice(0, 10);
   const cuotaMensualTotal = activas.reduce((s, op) => {
     const monto = esCuotaSocial(op.producto) ? cuotaSocialEnFecha(hoyIso) : op.importeCuota;
     return s + monto;
@@ -248,5 +289,7 @@ export function calcularResumenConsolidado(
     cuotasImpagasVencidas: vencidas.length,
     hayPrestamoActivo: activas.some(op => op.esCredito),
     cargoPorAtrasoAcumulado: round2(cargoPorAtrasoAcumulado),
+    vencidasOcultas: ocultasVencidas.length,
+    saldoVencidoOculto: round2(saldoVencidoOculto),
   };
 }
