@@ -289,8 +289,18 @@ function validarConfig(): void {
     if (config.whatsapp.permitirSinFirma) {
       errores.push('ALLOW_UNSIGNED_WEBHOOK=true no se admite con USE_MOCK_DB=false. Es solo para debug local.');
     }
+    // OJO: `mockpagos` NO es un mock. Es el portal Next.js real de la mutual —
+    // el nombre de la carpeta es un accidente histórico. Este check nació de esa
+    // confusión y bloqueaba el arranque con el dominio correcto, así que queda
+    // como advertencia: el punto que sí sigue en pie es que es un dominio
+    // gratuito de terceros, con "mock" en el nombre, dictado en el mensaje donde
+    // se le pide plata al socio. Cuando haya dominio propio, cambiar la env.
     if (config.portal.baseUrl.includes('mockpagos')) {
-      errores.push('PORTAL_PAGOS_URL sigue apuntando a mockpagos.vercel.app, que es el dominio de desarrollo. El bot se lo dicta a los socios como medio de pago.');
+      console.warn(
+        '⚠️  PORTAL_PAGOS_URL apunta a mockpagos.vercel.app. Es el portal real, ' +
+        'pero es un dominio gratuito de terceros y el nombre confunde: el bot se lo ' +
+        'dicta a los socios como medio de pago principal. Conviene un dominio propio.'
+      );
     }
   }
 
