@@ -73,9 +73,14 @@ export function importeCuotaPura(producto: string | null | undefined, impCuotaRa
 
   if (prod.startsWith('CUOTA SOCIAL')) return CUOTA_SOCIAL_MONTO;
 
-  // ASIST seguido de un número (con uno o más espacios). Ej: "ASIST 4410", "ASIST 20000".
-  const asistMatch = prod.match(/^ASIST\s+(\d+)/);
-  if (asistMatch) return Number(asistMatch[1]);
+  // Para addons tipo ASIST el monto va embebido en el nombre, AL FINAL. Buscarlo
+  // pegado a "ASIST" (/^ASIST\s+(\d+)/) fallaba con las variantes que llevan
+  // subcategoría: "ASIST MEDICA 25000" devolvía 0 y la asistencia desaparecía de
+  // la cuota mensual del socio. Espejo de mockpagos/lib/credito-mapper.ts.
+  if (prod.startsWith('ASIST')) {
+    const asistMatch = prod.match(/(\d+)\s*$/);
+    if (asistMatch) return Number(asistMatch[1]);
+  }
 
   return 0;
 }
