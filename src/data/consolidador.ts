@@ -22,7 +22,7 @@
 //      todo), cuotaMensualTotal (cuota actual, con cuota social vigente hoy).
 
 import { calcularCargoPorCuota } from './cargosAtraso.js';
-import { esCuotaSocial, cuotaSocialEnFecha } from './products.js';
+import { esCuotaSocial, cuotaSocialEnFecha, esAsistenciaProducto } from './products.js';
 import { hoyIsoAr, diasDeAtrasoIso } from '../util/fechas.js';
 import type { Cliente, Operacion, ResumenCliente } from './types.js';
 
@@ -83,6 +83,7 @@ function sintetizar(op: Operacion, hoyIso: string): CuotaSintetica[] {
   const cuotasVencidas = Math.min(op.cuotasImpagasVencidas, cuotasImpagas);
 
   const esSocial = esCuotaSocial(op.producto);
+  const esAsistencia = esAsistenciaProducto(op.producto);
 
   // Pagos parciales sobre vencidas: si "Saldo venc." es MENOR que importeCuota *
   // cuotasVencidas, hay abonos parciales. Distribuimos uniformemente entre vencidas
@@ -121,7 +122,9 @@ function sintetizar(op: Operacion, hoyIso: string): CuotaSintetica[] {
     let cargo = 0;
     if (estado === 'vencida' && montoPuro > 0) {
       const dias = diasDeAtrasoIso(venc, hoyIso);
-      cargo = calcularCargoPorCuota(montoPuro, dias).cargoTotal;
+      // Las asistencias no llevan el 10% fijo administrativo (sólo 0,5% diario).
+      // Ver calcularCargoPorCuota.
+      cargo = calcularCargoPorCuota(montoPuro, dias, { aplicaCargoFijo: !esAsistencia }).cargoTotal;
     }
 
     cuotas.push({

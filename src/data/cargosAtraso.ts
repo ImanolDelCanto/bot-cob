@@ -43,7 +43,17 @@ function round2(n: number): number {
  * Calcula el cargo por atraso para UNA cuota individual.
  * Equivalente al endpoint POST /api/cargos-atraso/calcular.
  */
-export function calcularCargoPorCuota(importeCuota: number, diasAtraso: number): CargoAtrasoResultado {
+export function calcularCargoPorCuota(
+  importeCuota: number,
+  diasAtraso: number,
+  opts: { aplicaCargoFijo?: boolean } = {},
+): CargoAtrasoResultado {
+  // El 10% fijo administrativo NO aplica a todos los productos. Verificado contra
+  // la cuenta corriente del backoffice (varios socios): las ASISTENCIAS sólo
+  // acumulan el 0,5% diario; la cuota social y los préstamos sí llevan el fijo.
+  // El bot lo aplicaba a todo y le cobraba de más a cada socio con una asistencia
+  // vencida (10% de la cuota por cuota). Espejo de mockpagos/lib/cargo-atraso.ts.
+  const { aplicaCargoFijo = true } = opts;
   const { tasaDiaria, cargoAdministrativo, topeMaximo, umbralDiasCargoFijo } = CARGOS_CONFIG;
   const topeAbs = round2(topeMaximo * importeCuota);
 
@@ -59,7 +69,7 @@ export function calcularCargoPorCuota(importeCuota: number, diasAtraso: number):
     };
   }
 
-  const cargoFijo = diasAtraso >= umbralDiasCargoFijo
+  const cargoFijo = aplicaCargoFijo && diasAtraso >= umbralDiasCargoFijo
     ? round2(cargoAdministrativo * importeCuota)
     : 0;
   const cargoDiario = round2(tasaDiaria * importeCuota * diasAtraso);

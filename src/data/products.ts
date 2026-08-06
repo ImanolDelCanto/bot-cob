@@ -26,6 +26,13 @@ export function esProductoPrestamo(producto: string | null | undefined): boolean
 // sobre cuotas de hace meses infla la deuda (se acopla cargos por atraso encima).
 export const CUOTA_SOCIAL_MONTO = 15_000;
 
+// true si el Producto es una ASISTENCIA. Importa para el cargo por atraso: las
+// asistencias NO llevan el 10% fijo administrativo, sólo el 0,5% diario
+// (verificado contra la cuenta corriente del backoffice). Ver cargosAtraso.ts.
+export function esAsistenciaProducto(producto: string | null | undefined): boolean {
+  return (producto ?? '').trim().toUpperCase().startsWith('ASIST');
+}
+
 // true si el Producto es la CUOTA SOCIAL (el addon de membresía mensual).
 export function esCuotaSocial(producto: string | null | undefined): boolean {
   return (producto ?? '').trim().toUpperCase().startsWith('CUOTA SOCIAL');
